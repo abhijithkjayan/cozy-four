@@ -36,6 +36,8 @@ export async function signedUrl(path: string) {
   return data.signedUrl;
 }
 
+export const wipeLocalCaches = () => urlCache.clear();
+
 export const pairFilter = (a: string, b: string) =>
   `and(sender_id.eq.${a},receiver_id.eq.${b}),and(sender_id.eq.${b},receiver_id.eq.${a})`;
 
