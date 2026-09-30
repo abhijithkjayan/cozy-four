@@ -8,9 +8,9 @@ import { ChatApp } from "@/components/chat/ChatApp";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "Messenger — private chat" },
+      { title: "JTWDFLC!🩸" },
       { name: "description", content: "A private, minimal messenger for four people with calls, voice notes and photos." },
-      { property: "og:title", content: "Messenger — private chat" },
+      { property: "og:title", content: "JTWDFLC!🩸" },
       { property: "og:description", content: "A private, minimal messenger for four people with calls, voice notes and photos." },
     ],
   }),
