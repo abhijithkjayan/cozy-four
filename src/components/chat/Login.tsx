@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { MessageCircle } from "lucide-react";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
+import { ensureAccounts } from "@/lib/accounts.functions";
 
 export function Login() {
   const [uid, setUid] = useState("");
@@ -12,7 +13,16 @@ export function Login() {
     e.preventDefault();
     setErr("");
     setBusy(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: toEmail(uid), password: pw + PASSWORD_PAD });
+    const creds = { email: toEmail(uid), password: pw + PASSWORD_PAD };
+    let { error } = await supabase.auth.signInWithPassword(creds);
+    if (error) {
+      try {
+        await ensureAccounts();
+        ({ error } = await supabase.auth.signInWithPassword(creds));
+      } catch {
+        /* ignore */
+      }
+    }
     setBusy(false);
     if (error) setErr("Wrong User ID or password.");
   };

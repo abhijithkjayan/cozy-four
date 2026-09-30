@@ -9,5 +9,5 @@
 > the editor, so keep the branch in a working state.
 <!-- LOVABLE:END -->
 
-- Backend is the user's own Supabase project (URL + anon key in src/lib/supabase.ts); schema lives in supabase-setup.sql, run manually in the SQL Editor — keeps setup to one paste.
+- Backend is Lovable Cloud; schema via migrations; the 4 accounts are created idempotently by ensureAccounts server fn (called on failed login) since auth schema cannot be seeded in SQL.
 - Realtime: postgres_changes for messages, broadcast channels `typing:<a>:<b>` and `call:<userId>` for typing and WebRTC signalling; ICE config isolated in src/lib/ice.ts so TURN can be added.
