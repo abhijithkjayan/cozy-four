@@ -229,6 +229,14 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     return () => clearInterval(t);
   }, [phase]);
 
+  // Keep the phone screen awake during a call
+  useEffect(() => {
+    if (phase === "idle" || !("wakeLock" in navigator)) return;
+    let lock: { release: () => Promise<void> } | null = null;
+    (navigator as any).wakeLock.request("screen").then((l: any) => (lock = l)).catch(() => {});
+    return () => { lock?.release().catch(() => {}); };
+  }, [phase]);
+
   useEffect(() => {
     if (remoteVid.current) remoteVid.current.volume = loud ? 1 : 0.35;
   }, [loud, phase]);
@@ -263,23 +271,23 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         <div className="fixed inset-0 z-50 flex flex-col bg-call-bg text-call-fg">
           <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
           {showVideo && (
-            <video ref={localVid} autoPlay playsInline muted className={cn("absolute right-4 top-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg sm:h-48 sm:w-36", camOff && "opacity-0", facing.current === "user" && "-scale-x-100")} />
+            <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg sm:h-48 sm:w-36", camOff && "opacity-0", facing.current === "user" && "-scale-x-100")} />
           )}
-          <div className={cn("relative z-10 flex flex-1 flex-col items-center pt-20", showVideo && hasRemoteVideo && "justify-start")}>
+          <div className={cn("relative z-10 flex flex-1 flex-col items-center pt-24", showVideo && hasRemoteVideo && "justify-start")}>
             {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
             <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
             <p className="mt-1 text-sm opacity-75 drop-shadow">
               {phase === "incoming" ? `Incoming ${info.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : fmtDur(elapsed)}
             </p>
           </div>
-          <div className="relative z-10 pb-12">
+          <div className="relative z-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
             {phase === "incoming" ? (
-              <div className="flex justify-center gap-20">
+              <div className="flex justify-center gap-16 sm:gap-20">
                 <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
                 <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
               </div>
             ) : (
-              <div className="flex flex-wrap justify-center gap-4 px-4">
+              <div className="flex flex-wrap justify-center gap-x-4 gap-y-3 px-3">
                 <CallBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</CallBtn>
                 {info.video && <CallBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</CallBtn>}
                 {info.video && <CallBtn label="Switch" onClick={switchCam}><RefreshCcw /></CallBtn>}

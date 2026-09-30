@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Image as ImageIcon, Phone, PhoneMissed, Reply, Send, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Forward, Image as ImageIcon, ListChecks, MoreVertical, Phone, PhoneMissed, Reply, Send, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -29,6 +29,12 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
   const typingTimer = useRef<number | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   const { startCall, busy } = useCalls();
+  const [sel, setSel] = useState<Set<string> | null>(null); // selection mode when not null
+  const [confirm, setConfirm] = useState<null | "clear" | "delete">(null);
+  const [fwdOpen, setFwdOpen] = useState(false);
+  const [contacts, setContacts] = useState<Profile[]>([]);
+  const [busyOp, setBusyOp] = useState(false);
+  const pressTimer = useRef<number | undefined>(undefined);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
 
@@ -151,24 +157,122 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
   const deleteForAll = (m: Message) => supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id).then();
 
+  // ---- selection / clear / forward ----
+  const toggleSel = (id: string) =>
+    setSel((s) => {
+      if (!s) return s;
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  const startSel = (id: string) => setSel(new Set([id]));
+  const cancelPress = () => clearTimeout(pressTimer.current);
+  const markDeletedLocally = (ids: Set<string>) =>
+    setMsgs((l) => l.map((m) => (ids.has(m.id) && !m.deleted_for?.includes(me.id) ? { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] } : m)));
+
+  const selected = msgs.filter((m) => sel?.has(m.id));
+  const allMine = selected.length > 0 && selected.every((m) => m.sender_id === me.id && !m.deleted_for_everyone && m.type !== "call");
+  const forwardable = selected.filter((m) => m.type !== "call" && !m.deleted_for_everyone);
+
+  // Mark messages as deleted for me (client-side, no database changes needed)
+  const hideForMe = async (rows: { id: string; deleted_for: string[] | null }[]) => {
+    for (let i = 0; i < rows.length; i += 15) {
+      const results = await Promise.all(
+        rows.slice(i, i + 15).map((r) => supabase.from("messages").update({ deleted_for: [...(r.deleted_for ?? []), me.id] }).eq("id", r.id)),
+      );
+      if (results.some((r) => r.error)) return false;
+    }
+    return true;
+  };
+  const doClear = async () => {
+    setBusyOp(true);
+    const { data, error } = await supabase.from("messages").select("id, deleted_for").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`);
+    const ok = !error && (await hideForMe((data ?? []) as { id: string; deleted_for: string[] | null }[]));
+    setBusyOp(false);
+    if (!ok) return alert("Could not clear chat. Please try again.");
+    markDeletedLocally(new Set((data ?? []).map((r) => r.id as string)));
+    setMsgs((l) => l.map((m) => (m.deleted_for?.includes(me.id) ? m : { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] })));
+    setConfirm(null);
+    setSel(null);
+  };
+  const doDeleteForMe = async () => {
+    setBusyOp(true);
+    const ok = await hideForMe(selected.map((m) => ({ id: m.id, deleted_for: m.deleted_for })));
+    setBusyOp(false);
+    if (!ok) return alert("Could not delete. Please try again.");
+    markDeletedLocally(new Set(selected.map((m) => m.id)));
+    setConfirm(null);
+    setSel(null);
+  };
+  const doDeleteForAll = async () => {
+    const ids = selected.map((m) => m.id);
+    setBusyOp(true);
+    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).in("id", ids).eq("sender_id", me.id);
+    setBusyOp(false);
+    if (error) return alert("Could not delete for everyone.");
+    setMsgs((l) => l.map((m) => (ids.includes(m.id) ? { ...m, deleted_for_everyone: true, content: null, media_url: null } : m)));
+    setConfirm(null);
+    setSel(null);
+  };
+  const openForward = async () => {
+    setFwdOpen(true);
+    const { data } = await supabase.from("profiles").select("*").neq("id", me.id).order("user_id");
+    setContacts((data ?? []) as Profile[]);
+  };
+  const forwardTo = async (target: Profile) => {
+    setBusyOp(true);
+    const items = [...forwardable].sort((a, b) => a.created_at.localeCompare(b.created_at));
+    for (const m of items) {
+      let media = m.media_url;
+      if (media) {
+        const ext = media.split(".").pop() || "bin";
+        const dest = `${me.id}/${target.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const { error } = await supabase.storage.from("chat-media").copy(media, dest);
+        if (error) continue;
+        media = dest;
+      }
+      const { data, error } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: target.id, type: m.type, content: m.content, media_url: media }).select().single();
+      if (!error && data) emitMsg(data as Message);
+    }
+    setBusyOp(false);
+    setFwdOpen(false);
+    setSel(null);
+  };
+
   const byId = new Map(msgs.map((m) => [m.id, m]));
   const shown = msgs.filter(visible);
   const status = typing ? "typing…" : online ? "online" : lastSeen(peer.last_seen);
 
   return (
     <div className="flex h-full w-full flex-col bg-chat-bg">
-      <header className="flex h-16 shrink-0 items-center gap-3 border-b bg-card px-2 md:px-4">
-        <button onClick={onBack} className="rounded-full p-2 hover:bg-muted md:hidden" aria-label="Back"><ArrowLeft className="h-5 w-5" /></button>
+      {sel ? (
+        <header className="box-content flex h-16 shrink-0 items-center gap-2 border-b bg-card px-2 pt-[env(safe-area-inset-top)]">
+          <button onClick={() => setSel(null)} className="flex h-11 w-11 items-center justify-center rounded-full active:bg-muted" aria-label="Cancel selection"><X className="h-5 w-5" /></button>
+          <div className="flex-1 font-medium">{sel.size} selected</div>
+          <button disabled={!forwardable.length} onClick={openForward} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-30" aria-label="Forward"><Forward className="h-5 w-5" /></button>
+          <button disabled={!sel.size} onClick={() => setConfirm("delete")} className="flex h-11 w-11 items-center justify-center rounded-full text-destructive active:bg-muted disabled:opacity-30" aria-label="Delete"><Trash2 className="h-5 w-5" /></button>
+        </header>
+      ) : (
+      <header className="box-content flex h-16 shrink-0 items-center gap-2 border-b bg-card px-2 pt-[env(safe-area-inset-top)] md:gap-3 md:px-4">
+        <button onClick={onBack} className="flex h-11 w-11 items-center justify-center rounded-full active:bg-muted md:hidden" aria-label="Back"><ArrowLeft className="h-5 w-5" /></button>
         <Avatar p={peer} size={40} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">{peer.display_name}</div>
           <div className={cn("truncate text-xs", typing ? "text-primary" : "text-muted-foreground")}>{status}</div>
         </div>
-        <button disabled={busy} onClick={() => startCall(peer, true)} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted disabled:opacity-40" aria-label="Video call"><Video className="h-5 w-5" /></button>
-        <button disabled={busy} onClick={() => startCall(peer, false)} className="rounded-full p-2.5 text-muted-foreground hover:bg-muted disabled:opacity-40" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
+        <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
+        <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
+        <DropdownMenu>
+          <DropdownMenuTrigger className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Chat menu"><MoreVertical className="h-5 w-5" /></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setSel(new Set())}><ListChecks className="mr-2 h-4 w-4" />Select messages</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setConfirm("clear")} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Clear chat</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </header>
+      )}
 
-      <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto px-3 py-4 md:px-[8%]">
+      <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-[8%]">
         {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
         {shown.map((m, i) => {
           const newDay = i === 0 || dayLabel(shown[i - 1]!.created_at) !== dayLabel(m.created_at);
@@ -182,22 +286,33 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
                 </div>
               )}
               {m.type === "call" ? (
-                <div className="my-2 flex justify-center">
+                <div className={cn("my-2 flex items-center justify-center gap-2", sel?.has(m.id) && "bg-primary/10")} onClick={sel ? () => toggleSel(m.id) : undefined}>
+                  {sel && <Tick on={sel.has(m.id)} />}
                   <span className={cn("flex items-center gap-2 rounded-lg bg-card px-3 py-1.5 text-xs shadow-sm", m.content?.startsWith("Missed") && "text-destructive")}>
                     {m.content?.startsWith("Missed") ? <PhoneMissed className="h-3.5 w-3.5" /> : m.content?.startsWith("Video") ? <Video className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
                     {m.content} · {fmtTime(m.created_at)}
                   </span>
                 </div>
               ) : (
-                <div className={cn("group my-0.5 flex", mine ? "justify-end" : "justify-start")}>
+                <div
+                  className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", sel?.has(m.id) && "bg-primary/10", sel && "cursor-pointer")}
+                  onClick={sel ? () => toggleSel(m.id) : undefined}
+                  onPointerDown={!sel && !m.deleted_for_everyone ? () => { pressTimer.current = window.setTimeout(() => startSel(m.id), 500); } : undefined}
+                  onPointerUp={cancelPress}
+                  onPointerLeave={cancelPress}
+                  onPointerCancel={cancelPress}
+                  onPointerMove={cancelPress}
+                >
+                  {sel && <div className={cn(mine && "order-last")}><Tick on={sel.has(m.id)} /></div>}
                   <div className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in")}>
                     {!m.deleted_for_everyone && (
                       <DropdownMenu>
-                        <DropdownMenuTrigger className="absolute right-1 top-1 z-10 rounded-full bg-inherit p-0.5 text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
+                        <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
                           <ChevronDown className="h-4 w-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align={mine ? "end" : "start"}>
                           <DropdownMenuItem onClick={() => setReply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                           <DropdownMenuItem onClick={() => deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
                           {mine && <DropdownMenuItem onClick={() => deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
                         </DropdownMenuContent>
@@ -247,20 +362,27 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
         </div>
       )}
 
-      <div className="flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4" style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
+      <div className={cn("flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4", sel && "hidden")} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = ""; }} />
         {text ? null : (
-          <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted disabled:opacity-50" aria-label="Send photo">
+          <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
             <ImageIcon className="h-5 w-5" />
           </button>
         )}
         <textarea
           value={text}
           onChange={(e) => onType(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendText(); } }}
+          onKeyDown={(e) => {
+            // On phones Enter adds a new line (like WhatsApp); on desktop Enter sends
+            const touch = window.matchMedia("(pointer: coarse)").matches;
+            if (e.key === "Enter" && !e.shiftKey && !touch) { e.preventDefault(); sendText(); }
+          }}
+          onFocus={() => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, 300)}
+          enterKeyHint="enter"
+          autoCapitalize="sentences"
           rows={1}
           placeholder={uploading ? "Sending…" : "Message"}
-          className="max-h-32 min-h-11 flex-1 resize-none rounded-3xl border-0 bg-card px-4 py-2.5 text-[15px] shadow-sm outline-none"
+          className="max-h-32 min-h-11 flex-1 resize-none rounded-3xl border-0 bg-card px-4 py-2.5 text-base leading-snug shadow-sm outline-none"
         />
         {text.trim() ? (
           <button onClick={sendText} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground" aria-label="Send">
@@ -271,12 +393,72 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
         )}
       </div>
 
+      {confirm && (
+        <Modal onClose={() => !busyOp && setConfirm(null)}>
+          {confirm === "clear" ? (
+            <>
+              <h3 className="text-base font-semibold">Clear this chat?</h3>
+              <p className="mt-1 text-sm text-muted-foreground">All messages will be removed for you. {peer.display_name} will still have them.</p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button disabled={busyOp} onClick={() => setConfirm(null)} className="rounded-lg px-4 py-2 text-sm">Cancel</button>
+                <button disabled={busyOp} onClick={doClear} className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white disabled:opacity-60">{busyOp ? "Clearing…" : "Clear chat"}</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <h3 className="text-base font-semibold">Delete {sel?.size} message{sel?.size === 1 ? "" : "s"}?</h3>
+              <div className="mt-4 flex flex-col gap-2">
+                <button disabled={busyOp} onClick={doDeleteForMe} className="rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60">Delete for me</button>
+                {allMine && <button disabled={busyOp} onClick={doDeleteForAll} className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-medium text-destructive disabled:opacity-60">Delete for everyone</button>}
+                <button disabled={busyOp} onClick={() => setConfirm(null)} className="rounded-lg px-4 py-2 text-sm text-muted-foreground">Cancel</button>
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+
+      {fwdOpen && (
+        <Modal onClose={() => !busyOp && setFwdOpen(false)}>
+          <h3 className="text-base font-semibold">Forward {forwardable.length} message{forwardable.length === 1 ? "" : "s"} to…</h3>
+          <ul className="mt-3 max-h-72 overflow-y-auto">
+            {contacts.map((c) => (
+              <li key={c.id}>
+                <button disabled={busyOp} onClick={() => forwardTo(c)} className="flex w-full items-center gap-3 rounded-lg px-2 py-2.5 text-left active:bg-muted disabled:opacity-60">
+                  <Avatar p={c} size={36} />
+                  <span className="font-medium">{c.display_name}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {busyOp && <p className="mt-2 text-center text-xs text-muted-foreground">Sending…</p>}
+          <div className="mt-3 flex justify-end"><button disabled={busyOp} onClick={() => setFwdOpen(false)} className="rounded-lg px-4 py-2 text-sm">Cancel</button></div>
+        </Modal>
+      )}
+
       {viewer && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-call-bg/95 p-4" onClick={() => setViewer(null)}>
-          <button className="absolute right-4 top-4 rounded-full p-2 text-call-fg" aria-label="Close"><X className="h-6 w-6" /></button>
+          <button className="absolute right-4 flex h-11 w-11 items-center justify-center rounded-full text-call-fg" style={{ top: "max(1rem, env(safe-area-inset-top))" }} aria-label="Close"><X className="h-6 w-6" /></button>
           <img src={viewer} alt="Full size" className="max-h-full max-w-full rounded-lg object-contain" />
         </div>
       )}
+    </div>
+  );
+}
+
+function Tick({ on }: { on: boolean }) {
+  return (
+    <span className={cn("ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2", on ? "border-primary bg-primary text-primary-foreground" : "border-muted-foreground/50")}>
+      {on && <Check className="h-3 w-3" />}
+    </span>
+  );
+}
+
+function Modal({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-4 sm:items-center" onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl bg-card p-5 shadow-xl" style={{ marginBottom: "env(safe-area-inset-bottom)" }} onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
     </div>
   );
 }

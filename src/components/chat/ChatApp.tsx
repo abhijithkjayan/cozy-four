@@ -31,6 +31,39 @@ export function ChatApp({ userId }: { userId: string }) {
   const selRef = useRef<string | null>(null);
   selRef.current = sel;
 
+  // Mobile: follow the visible viewport so the on-screen keyboard never covers the input
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const set = () => {
+      document.documentElement.style.setProperty("--app-h", `${vv.height}px`);
+      window.scrollTo(0, 0);
+    };
+    set();
+    vv.addEventListener("resize", set);
+    vv.addEventListener("scroll", set);
+    return () => {
+      vv.removeEventListener("resize", set);
+      vv.removeEventListener("scroll", set);
+      document.documentElement.style.removeProperty("--app-h");
+    };
+  }, []);
+
+  // Mobile: phone Back button returns to the chat list instead of leaving the app
+  const openChat = (id: string) => {
+    if (!selRef.current) history.pushState({ chat: id }, "");
+    setSel(id);
+  };
+  const closeChat = () => {
+    if (history.state?.chat) history.back();
+    else setSel(null);
+  };
+  useEffect(() => {
+    const onPop = () => setSel(null);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
   useEffect(() => setDark(document.documentElement.classList.contains("dark")), []);
   const toggleDark = () => {
     const d = !dark;
@@ -137,26 +170,28 @@ export function ChatApp({ userId }: { userId: string }) {
   const clearUnread = useCallback((id: string) => setUnread((u) => ({ ...u, [id]: 0 })), []);
 
   const askNotify = () => {
-    if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission();
+    try {
+      if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission();
+    } catch {}
   };
 
   if (missing)
     return (
-      <div className="flex h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
+      <div className="app-shell flex flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="max-w-md text-muted-foreground">Your account has no profile yet. Run the setup script (supabase-setup.sql) in the database, then sign in again.</p>
         <button onClick={() => supabase.auth.signOut()} className="rounded-lg border px-4 py-2 text-sm">Log out</button>
       </div>
     );
-  if (!me) return <div className="flex h-dvh items-center justify-center text-sm text-muted-foreground">Loading…</div>;
+  if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
 
   const sorted = [...peers].sort((a, b) => new Date(last[b.id]?.created_at ?? 0).getTime() - new Date(last[a.id]?.created_at ?? 0).getTime());
   const peer = peers.find((p) => p.id === sel);
 
   return (
     <CallProvider me={me} profiles={all}>
-      <div className="flex h-dvh overflow-hidden bg-background" onClick={askNotify}>
+      <div className="app-shell flex overflow-hidden bg-background" onClick={askNotify}>
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
-          <header className="flex h-16 items-center justify-between px-4">
+          <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
             <div className="flex items-center gap-3">
               <Avatar p={me} size={38} />
               <span className="font-semibold">{me.display_name}</span>
@@ -167,21 +202,21 @@ export function ChatApp({ userId }: { userId: string }) {
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuItem onClick={toggleDark}>{dark ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}{dark ? "Light mode" : "Dark mode"}</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => Notification?.requestPermission?.()}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
+                <DropdownMenuItem onClick={askNotify}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => supabase.auth.signOut()}><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </header>
           <h2 className="px-4 pb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Chats</h2>
-          <ul className="flex-1 overflow-y-auto">
+          <ul className="flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
             {sorted.map((p) => {
               const m = last[p.id];
               const n = unread[p.id] ?? 0;
               return (
                 <li key={p.id}>
                   <button
-                    onClick={() => setSel(p.id)}
-                    className={cn("flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-muted", sel === p.id && "bg-muted")}
+                    onClick={() => openChat(p.id)}
+                    className={cn("flex w-full items-center gap-3 px-4 py-3 text-left transition active:bg-muted md:hover:bg-muted", sel === p.id && "bg-muted")}
                   >
                     <Avatar p={p} online={online.has(p.id)} />
                     <div className="min-w-0 flex-1 border-b border-border/60 pb-3">
@@ -200,9 +235,9 @@ export function ChatApp({ userId }: { userId: string }) {
             })}
           </ul>
         </aside>
-        <main className={cn("flex-1", !sel && "hidden md:flex")}>
+        <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={() => setSel(null)} onSeen={clearUnread} />
+            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={closeChat} onSeen={clearUnread} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">JTWDFLC!🩸</p>

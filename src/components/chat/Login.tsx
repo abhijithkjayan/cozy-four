@@ -28,7 +28,7 @@ export function Login() {
   };
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-chat-bg px-5">
+    <div className="flex min-h-dvh items-center justify-center bg-chat-bg px-5 py-6" style={{ paddingTop: "max(1.5rem, env(safe-area-inset-top))", paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
       <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border bg-card p-8 shadow-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
@@ -41,8 +41,11 @@ export function Login() {
           value={uid}
           onChange={(e) => setUid(e.target.value)}
           autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          enterKeyHint="next"
           autoComplete="username"
-          className="mb-4 w-full rounded-lg border bg-background px-3 py-2.5 outline-none focus:ring-2 focus:ring-ring"
+          className="mb-4 w-full rounded-lg border bg-background px-3 py-3 text-base outline-none focus:ring-2 focus:ring-ring"
           required
         />
         <label className="mb-1 block text-xs font-medium text-muted-foreground">Password</label>
@@ -51,13 +54,14 @@ export function Login() {
           value={pw}
           onChange={(e) => setPw(e.target.value)}
           autoComplete="current-password"
-          className="mb-5 w-full rounded-lg border bg-background px-3 py-2.5 outline-none focus:ring-2 focus:ring-ring"
+          enterKeyHint="go"
+          className="mb-5 w-full rounded-lg border bg-background px-3 py-3 text-base outline-none focus:ring-2 focus:ring-ring"
           required
         />
         {err && <p className="mb-4 text-sm text-destructive">{err}</p>}
         <button
           disabled={busy}
-          className="w-full rounded-lg bg-primary py-2.5 font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
+          className="min-h-12 w-full rounded-lg bg-primary py-3 font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>
