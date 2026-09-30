@@ -162,3 +162,11 @@
   }
   html, body { height: 100%; overscroll-behavior: none; }
 }
+
+/* ---- Mobile web polish ---- */
+.app-shell { height: var(--app-h, 100dvh); }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { -webkit-tap-highlight-color: transparent; }
+button, [role="button"], a { touch-action: manipulation; }
+input, textarea, select { font-size: max(16px, 1em); }
+textarea, .select-text { -webkit-user-select: text; user-select: text; }
