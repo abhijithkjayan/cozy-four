@@ -1,13 +1,5 @@
-import { createClient } from "@supabase/supabase-js";
-
-// Publishable (anon) credentials — safe in browser code. Access is enforced by RLS.
-export const SUPABASE_URL = "https://ijulcjptlhxxhvmcqgde.supabase.co";
-export const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlqdWxjanB0bGh4eGh2bWNxZ2RlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA3OTUzMjYsImV4cCI6MjEwNjM3MTMyNn0.Y9S9YGyUjHD4HpFrbJeuLmLXxsCqJIamsCyHjvLPOIc";
-
-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, storageKey: "pm-auth" },
-});
+import { supabase } from "@/integrations/supabase/client";
+export { supabase };
 
 export const PASSWORD_PAD = "_pad_secure";
 export const toEmail = (userId: string) => `${userId.trim().toLowerCase()}@chat.local`;
