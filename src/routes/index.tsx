@@ -9,9 +9,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "JTWDFLC!🩸" },
-      { name: "description", content: "A private, minimal messenger for four people with calls, voice notes and photos." },
-      { property: "og:title", content: "JTWDFLC!🩸" },
-      { property: "og:description", content: "A private, minimal messenger for four people with calls, voice notes and photos." },
+      { name: "robots", content: "noindex, nofollow, noarchive" },
     ],
   }),
   component: Index,

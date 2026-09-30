@@ -82,6 +82,8 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-status-bar-style", content: "default" },
       { name: "format-detection", content: "telephone=no" },
+      { name: "robots", content: "noindex, nofollow, noarchive, nosnippet, noimageindex" },
+      { name: "referrer", content: "no-referrer" },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
