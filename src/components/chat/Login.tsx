@@ -12,6 +12,10 @@ export function Login() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr("");
+    // Brute-force protection: lock after 5 wrong attempts
+    let until = 0;
+    try { until = Number(localStorage.getItem("lk-until") || 0); } catch {}
+    if (Date.now() < until) return setErr(`Too many attempts. Try again in ${Math.ceil((until - Date.now()) / 1000)}s.`);
     setBusy(true);
     const creds = { email: toEmail(uid), password: pw + PASSWORD_PAD };
     let { error } = await supabase.auth.signInWithPassword(creds);
@@ -24,7 +28,16 @@ export function Login() {
       }
     }
     setBusy(false);
-    if (error) setErr("Wrong User ID or password.");
+    if (error) {
+      let n = 0;
+      try { n = Number(localStorage.getItem("lk-n") || 0) + 1; localStorage.setItem("lk-n", String(n)); } catch {}
+      if (n >= 5) {
+        try { localStorage.setItem("lk-until", String(Date.now() + Math.min(15, n - 4) * 60_000)); } catch {}
+        setErr("Too many attempts. Locked for a few minutes.");
+      } else setErr("Wrong User ID or password.");
+    } else {
+      try { localStorage.removeItem("lk-n"); localStorage.removeItem("lk-until"); } catch {}
+    }
   };
 
   return (

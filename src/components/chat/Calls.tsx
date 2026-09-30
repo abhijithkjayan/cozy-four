@@ -5,6 +5,7 @@ import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
 import { ICE_SERVERS } from "@/lib/ice";
 import { startRing, stopRing, notify } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
+import { idleState } from "@/lib/security";
 import { Avatar } from "./Avatar";
 import { cn } from "@/lib/utils";
 
@@ -228,6 +229,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const t = setInterval(() => startedAt.current && setElapsed((Date.now() - startedAt.current) / 1000), 500);
     return () => clearInterval(t);
   }, [phase]);
+
+  useEffect(() => { idleState.paused = phase !== "idle"; return () => { idleState.paused = false; }; }, [phase]);
 
   // Keep the phone screen awake during a call
   useEffect(() => {

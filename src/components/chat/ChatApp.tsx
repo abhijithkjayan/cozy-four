@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, LogOut, Moon, MoreVertical, Sun } from "lucide-react";
+import { Bell, Camera, LogOut, Moon, MoreVertical, Sun, Trash2 } from "lucide-react";
 import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
 import { messageTone, notify } from "@/lib/tones";
 import { cn } from "@/lib/utils";
+import { imageToAvatar, secureLogout, useIdleLogout } from "@/lib/security";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
 import { Conversation } from "./Conversation";
@@ -28,8 +29,25 @@ export function ChatApp({ userId }: { userId: string }) {
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [missing, setMissing] = useState(false);
   const [dark, setDark] = useState(false);
+  const { left, stay } = useIdleLogout();
+  const photoRef = useRef<HTMLInputElement>(null);
+  const [photoBusy, setPhotoBusy] = useState(false);
   const selRef = useRef<string | null>(null);
   selRef.current = sel;
+
+  const setAvatar = async (url: string | null) => {
+    if (!me) return;
+    setPhotoBusy(true);
+    const { error } = await supabase.from("profiles").update({ avatar_url: url }).eq("id", me.id);
+    setPhotoBusy(false);
+    if (error) return alert("Could not update the photo. Please try again.");
+    setMe({ ...me, avatar_url: url });
+    setAll((a) => a.map((p) => (p.id === me.id ? { ...p, avatar_url: url } : p)));
+  };
+  const pickPhoto = async (f: File | undefined) => {
+    if (!f) return;
+    try { await setAvatar(await imageToAvatar(f)); } catch { alert("That image could not be used. Try another photo."); }
+  };
 
   // Mobile: follow the visible viewport so the on-screen keyboard never covers the input
   useEffect(() => {
@@ -179,7 +197,7 @@ export function ChatApp({ userId }: { userId: string }) {
     return (
       <div className="app-shell flex flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="max-w-md text-muted-foreground">Your account has no profile yet. Run the setup script (supabase-setup.sql) in the database, then sign in again.</p>
-        <button onClick={() => supabase.auth.signOut()} className="rounded-lg border px-4 py-2 text-sm">Log out</button>
+        <button onClick={() => secureLogout()} className="rounded-lg border px-4 py-2 text-sm">Log out</button>
       </div>
     );
   if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
@@ -189,21 +207,33 @@ export function ChatApp({ userId }: { userId: string }) {
 
   return (
     <CallProvider me={me} profiles={all}>
+      {left !== null && (
+        <div className="fixed inset-x-0 top-0 z-[60] flex items-center justify-between gap-3 bg-foreground px-4 py-3 text-sm text-background" style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}>
+          <span>Logging out in {left}s because you were inactive.</span>
+          <button onClick={stay} className="rounded-md bg-background px-3 py-1 font-medium text-foreground">Stay signed in</button>
+        </div>
+      )}
       <div className="app-shell flex overflow-hidden bg-background" onClick={askNotify}>
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
           <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
             <div className="flex items-center gap-3">
-              <Avatar p={me} size={38} />
+              <button onClick={() => photoRef.current?.click()} disabled={photoBusy} className="relative rounded-full" aria-label="Change profile photo">
+                <Avatar p={me} size={38} />
+                <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground"><Camera className="h-2.5 w-2.5" /></span>
+              </button>
               <span className="font-semibold">{me.display_name}</span>
+              <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
             <DropdownMenu>
               <DropdownMenuTrigger className="rounded-full p-2 text-muted-foreground hover:bg-muted" aria-label="Menu">
                 <MoreVertical className="h-5 w-5" />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => photoRef.current?.click()}><Camera className="mr-2 h-4 w-4" />{photoBusy ? "Saving…" : "Change profile photo"}</DropdownMenuItem>
+                {me.avatar_url && <DropdownMenuItem onClick={() => setAvatar(null)}><Trash2 className="mr-2 h-4 w-4" />Remove profile photo</DropdownMenuItem>}
                 <DropdownMenuItem onClick={toggleDark}>{dark ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}{dark ? "Light mode" : "Dark mode"}</DropdownMenuItem>
                 <DropdownMenuItem onClick={askNotify}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => supabase.auth.signOut()}><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => secureLogout()}><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </header>
