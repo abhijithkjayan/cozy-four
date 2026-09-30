@@ -24,7 +24,7 @@ export function Login() {
           <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
             <MessageCircle className="h-7 w-7" />
           </div>
-          <h1 className="text-xl font-semibold">Sign in</h1>
+          <h1 className="text-xl font-semibold">JTWDFLC!🩸</h1>
         </div>
         <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID</label>
         <input
