@@ -26,7 +26,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
   const prevHeight = useRef<number | null>(null);
   const typingCh = useRef<ReturnType<typeof supabase.channel> | null>(null);
   const lastTypingSent = useRef(0);
-  const typingTimer = useRef<number>();
+  const typingTimer = useRef<number | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
   const { startCall, busy } = useCalls();
 
@@ -101,7 +101,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
 
   const onScroll = () => {
     const el = scroller.current;
-    if (el && el.scrollTop < 60 && hasMore && !loading && msgs.length) load(msgs[0].created_at);
+    if (el && el.scrollTop < 60 && hasMore && !loading && msgs.length) load(msgs[0]!.created_at);
   };
 
   const onType = (v: string) => {
@@ -171,7 +171,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
       <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto px-3 py-4 md:px-[8%]">
         {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
         {shown.map((m, i) => {
-          const newDay = i === 0 || dayLabel(shown[i - 1].created_at) !== dayLabel(m.created_at);
+          const newDay = i === 0 || dayLabel(shown[i - 1]!.created_at) !== dayLabel(m.created_at);
           const mine = m.sender_id === me.id;
           const rep = m.reply_to ? byId.get(m.reply_to) : undefined;
           return (

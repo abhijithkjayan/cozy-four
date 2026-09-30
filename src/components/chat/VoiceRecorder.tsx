@@ -9,7 +9,7 @@ export function VoiceRecorder({ onSend }: { onSend: (blob: Blob, secs: number, m
   const chunks = useRef<Blob[]>([]);
   const start = useRef(0);
   const cancel = useRef(false);
-  const timer = useRef<number>();
+  const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => () => { clearInterval(timer.current); mr.current?.stream.getTracks().forEach((t) => t.stop()); }, []);
 

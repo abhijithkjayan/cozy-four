@@ -16,7 +16,7 @@ type Sig = {
   sdp?: RTCSessionDescriptionInit;
   cand?: RTCIceCandidateInit;
 };
-type Info = { id: string; peer: Profile; video: boolean; role: "caller" | "callee"; offer?: RTCSessionDescriptionInit };
+type Info = { id: string; peer: Profile; video: boolean; role: "caller" | "callee"; offer?: RTCSessionDescriptionInit | undefined };
 type Phase = "idle" | "outgoing" | "incoming" | "active";
 
 const Ctx = createContext<{ startCall: (p: Profile, video: boolean) => void; busy: boolean }>({ startCall: () => {}, busy: false });
@@ -38,7 +38,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const infoRef = useRef<Info | null>(null);
   const phaseRef = useRef<Phase>("idle");
   const startedAt = useRef<number | null>(null);
-  const timeout = useRef<number>();
+  const timeout = useRef<number | undefined>(undefined);
   const facing = useRef<"user" | "environment">("user");
   const channels = useRef(new Map<string, Promise<RealtimeChannel>>());
   const localVid = useRef<HTMLVideoElement>(null);
@@ -245,7 +245,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     facing.current = facing.current === "user" ? "environment" : "user";
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing.current } });
-      const nt = s.getVideoTracks()[0];
+      const nt = s.getVideoTracks()[0]; if (!nt) return;
       const sender = pc.current?.getSenders().find((x) => x.track?.kind === "video");
       await sender?.replaceTrack(nt);
       local.current?.getVideoTracks().forEach((t) => { t.stop(); local.current!.removeTrack(t); });
