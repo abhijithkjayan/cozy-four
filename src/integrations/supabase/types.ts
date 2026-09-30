@@ -14,7 +14,139 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      calls: {
+        Row: {
+          caller_id: string
+          ended_at: string | null
+          id: string
+          receiver_id: string
+          started_at: string | null
+          status: string
+          type: string
+        }
+        Insert: {
+          caller_id: string
+          ended_at?: string | null
+          id?: string
+          receiver_id: string
+          started_at?: string | null
+          status?: string
+          type: string
+        }
+        Update: {
+          caller_id?: string
+          ended_at?: string | null
+          id?: string
+          receiver_id?: string
+          started_at?: string | null
+          status?: string
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "calls_caller_id_fkey"
+            columns: ["caller_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "calls_receiver_id_fkey"
+            columns: ["receiver_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      messages: {
+        Row: {
+          content: string | null
+          created_at: string
+          deleted_for: string[]
+          deleted_for_everyone: boolean
+          id: string
+          media_url: string | null
+          receiver_id: string
+          reply_to: string | null
+          sender_id: string
+          status: string
+          type: string
+        }
+        Insert: {
+          content?: string | null
+          created_at?: string
+          deleted_for?: string[]
+          deleted_for_everyone?: boolean
+          id?: string
+          media_url?: string | null
+          receiver_id: string
+          reply_to?: string | null
+          sender_id: string
+          status?: string
+          type?: string
+        }
+        Update: {
+          content?: string | null
+          created_at?: string
+          deleted_for?: string[]
+          deleted_for_everyone?: boolean
+          id?: string
+          media_url?: string | null
+          receiver_id?: string
+          reply_to?: string | null
+          sender_id?: string
+          status?: string
+          type?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "messages_receiver_id_fkey"
+            columns: ["receiver_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_reply_to_fkey"
+            columns: ["reply_to"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_sender_id_fkey"
+            columns: ["sender_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          display_name: string
+          id: string
+          last_seen: string | null
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          display_name: string
+          id: string
+          last_seen?: string | null
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          display_name?: string
+          id?: string
+          last_seen?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
