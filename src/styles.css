@@ -95,7 +95,7 @@
   --bubble-in: oklch(1 0 0);
   --bubble-out: oklch(0.92 0.07 85);
   --tick-read: #a32927;
-  --online: #eab64d;
+  --online: #22c55e;
   --call-bg: #370003;
   --call-fg: oklch(0.97 0.01 80);
   --chart-1: #930416;
@@ -137,7 +137,7 @@
   --bubble-in: #64000d;
   --bubble-out: oklch(0.38 0.07 25);
   --tick-read: #eab64d;
-  --online: #eab64d;
+  --online: #22c55e;
   --call-bg: oklch(0.16 0.03 18);
   --call-fg: oklch(0.97 0.01 80);
   --sidebar: oklch(0.26 0.04 20);

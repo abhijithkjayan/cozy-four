@@ -19,7 +19,7 @@ export function Avatar({ p, online, away, size = 44 }: { p: Profile; online?: bo
         <span
           className={cn(
             "absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card",
-            online ? "bg-online" : away ? "bg-yellow-400 dark:bg-yellow-300" : "bg-muted-foreground/40",
+            online ? "bg-emerald-500" : away ? "bg-amber-400" : "bg-neutral-400",
           )}
         />
       )}

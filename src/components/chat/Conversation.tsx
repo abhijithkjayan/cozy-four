@@ -13,7 +13,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 const PAGE = 30;
 
-export function Conversation({ me, peer, online, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
+export function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -311,7 +311,7 @@ export function Conversation({ me, peer, online, onBack, onSeen, onViewProfile }
       <header className="box-content flex h-16 shrink-0 items-center gap-2 border-b bg-card px-2 pt-[env(safe-area-inset-top)] md:gap-3 md:px-4">
         <button onClick={onBack} className="flex h-11 w-11 items-center justify-center rounded-full active:bg-muted md:hidden" aria-label="Back"><ArrowLeft className="h-5 w-5" /></button>
         <button type="button" onClick={() => onViewProfile(peer)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:bg-muted/50" aria-label={`View ${peer.display_name}'s profile and login activity`}>
-          <Avatar p={peer} size={40} />
+          <Avatar p={peer} size={40} online={online} away={away} />
           <span className="min-w-0 flex-1">
             <span className="block truncate font-medium">{peer.display_name}</span>
             {peer.status_text && <span className="block truncate text-xs text-muted-foreground">{peer.status_text}</span>}

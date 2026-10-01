@@ -349,7 +349,7 @@ export function ChatApp({ userId }: { userId: string }) {
         </aside>
         <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
+            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} away={away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">Lion's Den</p>
