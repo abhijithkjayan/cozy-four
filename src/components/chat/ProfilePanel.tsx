@@ -26,13 +26,13 @@ export function ProfilePanel({
   onStatusSaved: (status: string) => void;
   editable: boolean;
 }) {
-  const [status, setStatus] = useState(profile.status_text);
+  const [status, setStatus] = useState(profile.status_text ?? "");
   const [events, setEvents] = useState<LoginEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => setStatus(profile.status_text), [profile.id, profile.status_text]);
+  useEffect(() => setStatus(profile.status_text ?? ""), [profile.id, profile.status_text]);
 
   useEffect(() => {
     if (!open) return;
