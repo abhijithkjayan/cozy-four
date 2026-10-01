@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Phone, PhoneMissed, Reply, Send, Sticker, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Phone, PhoneMissed, Reply, Send, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -176,6 +176,39 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
     insert({ type: kind, content: JSON.stringify(item) });
   };
 
+  const downloadAttachment = async (message: Message, url?: string, title?: string) => {
+    try {
+      let blob: Blob;
+      let filename: string;
+      if (message.media_url) {
+        const { data, error } = await supabase.storage.from("chat-media").download(message.media_url);
+        if (error || !data) throw error ?? new Error("Attachment not found");
+        blob = data;
+        filename = decodeURIComponent(message.media_url.split("/").pop() || `attachment-${message.id}`);
+      } else if (url) {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error("Download failed");
+        blob = await response.blob();
+        const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1] || "gif";
+        filename = title?.trim().replace(/[\\/:*?"<>|]/g, "_") || `attachment-${message.id}`;
+        if (!/\.[a-z0-9]{2,5}$/i.test(filename)) filename += `.${extension}`;
+      } else {
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = filename;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    } catch {
+      alert("Could not download this attachment. Please try again.");
+    }
+  };
+
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
   const deleteForAll = (m: Message) => supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id).then();
 
@@ -335,6 +368,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align={mine ? "end" : "start"}>
                           <DropdownMenuItem onClick={() => setReply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                          {(m.media_url || attachment?.url) && <DropdownMenuItem onClick={() => void downloadAttachment(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
                           <DropdownMenuItem onClick={() => startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                           <DropdownMenuItem onClick={() => deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
                           {mine && <DropdownMenuItem onClick={() => deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
