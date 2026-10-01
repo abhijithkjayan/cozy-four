@@ -16,6 +16,9 @@ export function preview(m: Message | undefined, me: string) {
   const prefix = m.sender_id === me && m.type !== "call" ? "You: " : "";
   if (m.type === "image") return prefix + "📷 Photo";
   if (m.type === "audio") return prefix + "🎤 Voice message";
+  if (m.type === "location") return prefix + "📍 Location";
+  if (m.type === "gif") return prefix + "GIF";
+  if (m.type === "sticker") return prefix + "Sticker";
   return prefix + (m.content ?? "");
 }
 
@@ -208,12 +211,14 @@ export function ChatApp({ userId }: { userId: string }) {
   return (
     <CallProvider me={me} profiles={all}>
       {left !== null && (
-        <div className="fixed inset-x-0 top-0 z-[60] flex items-center justify-between gap-3 bg-foreground px-4 py-3 text-sm text-background" style={{ paddingTop: "max(0.75rem, env(safe-area-inset-top))" }}>
-          <span>Logging out in {left}s because you were inactive.</span>
-          <button onClick={stay} className="rounded-md bg-background px-3 py-1 font-medium text-foreground">Stay signed in</button>
+        <div className="fixed bottom-4 right-4 z-[60] flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm text-background shadow-xl">
+          <span>Logging out in <strong>{left}s</strong> because you were inactive.</span>
+          <button onClick={stay} className="shrink-0 rounded-md bg-background px-3 py-1 font-medium text-foreground">Stay signed in</button>
         </div>
       )}
-      <div className="app-shell flex overflow-hidden bg-background" onClick={askNotify}>
+      <div className="app-shell flex flex-col overflow-hidden bg-background" onClick={askNotify}>
+        <div className="flex h-8 shrink-0 items-center justify-center bg-primary text-xs font-bold tracking-[0.35em] text-primary-foreground">GOH</div>
+        <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
           <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
             <div className="flex items-center gap-3">
@@ -224,6 +229,11 @@ export function ChatApp({ userId }: { userId: string }) {
               <span className="font-semibold">{me.display_name}</span>
               <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
+            <div className="flex items-center gap-1">
+              <button onClick={() => secureLogout()} className="flex items-center gap-1 rounded-lg px-2 py-2 text-xs font-medium text-destructive hover:bg-destructive/10" aria-label="Log out">
+                <LogOut className="h-4 w-4" />
+                <span className="hidden sm:inline">Log out</span>
+              </button>
             <DropdownMenu>
               <DropdownMenuTrigger className="rounded-full p-2 text-muted-foreground hover:bg-muted" aria-label="Menu">
                 <MoreVertical className="h-5 w-5" />
@@ -236,6 +246,7 @@ export function ChatApp({ userId }: { userId: string }) {
                 <DropdownMenuItem onClick={() => secureLogout()}><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
+            </div>
           </header>
           <h2 className="px-4 pb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Chats</h2>
           <ul className="flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
@@ -275,6 +286,7 @@ export function ChatApp({ userId }: { userId: string }) {
             </div>
           )}
         </main>
+        </div>
       </div>
     </CallProvider>
   );

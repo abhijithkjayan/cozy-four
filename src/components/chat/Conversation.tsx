@@ -1,11 +1,12 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Forward, Image as ImageIcon, ListChecks, MoreVertical, Phone, PhoneMissed, Reply, Send, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Phone, PhoneMissed, Reply, Send, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AudioPlayer, ImageThumb } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
+import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -32,6 +33,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
   const [sel, setSel] = useState<Set<string> | null>(null); // selection mode when not null
   const [confirm, setConfirm] = useState<null | "clear" | "delete">(null);
   const [fwdOpen, setFwdOpen] = useState(false);
+  const [giphyOpen, setGiphyOpen] = useState(false);
   const [contacts, setContacts] = useState<Profile[]>([]);
   const [busyOp, setBusyOp] = useState(false);
   const pressTimer = useRef<number | undefined>(undefined);
@@ -154,6 +156,24 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
     if (path) insert({ type: "audio", media_url: path, content: String(Math.round(secs)) });
   };
 
+  const sendLocation = () => {
+    if (!navigator.geolocation) return alert("Location is not available in this browser.");
+    setUploading(true);
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        setUploading(false);
+        insert({ type: "location", content: JSON.stringify({ lat: coords.latitude, lng: coords.longitude, mapsUrl: `https://www.google.com/maps?q=${coords.latitude},${coords.longitude}` }) });
+      },
+      () => { setUploading(false); alert("Could not get your location. Please allow location access and try again."); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
+  };
+
+  const sendGiphy = (kind: "gif" | "sticker", item: { url: string; preview: string; title: string }) => {
+    setGiphyOpen(false);
+    insert({ type: kind, content: JSON.stringify(item) });
+  };
+
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
   const deleteForAll = (m: Message) => supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id).then();
 
@@ -258,7 +278,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
         <Avatar p={peer} size={40} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">{peer.display_name}</div>
-          <div className={cn("truncate text-xs", typing ? "text-primary" : "text-muted-foreground")}>{status}</div>
+          <div className={cn("line-clamp-2 text-xs leading-4", typing ? "text-primary" : "text-muted-foreground")}>{status}</div>
         </div>
         <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
         <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
@@ -278,6 +298,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
           const newDay = i === 0 || dayLabel(shown[i - 1]!.created_at) !== dayLabel(m.created_at);
           const mine = m.sender_id === me.id;
           const rep = m.reply_to ? byId.get(m.reply_to) : undefined;
+          const attachment = parseAttachment(m.content);
           return (
             <Fragment key={m.id}>
               {newDay && (
@@ -330,6 +351,15 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
                       <ImageThumb path={m.media_url} onOpen={setViewer} />
                     ) : m.type === "audio" && m.media_url ? (
                       <AudioPlayer path={m.media_url} duration={Number(m.content) || 0} />
+                    ) : m.type === "location" && attachment?.mapsUrl ? (
+                      <a href={attachment.mapsUrl} target="_blank" rel="noreferrer" className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
+                        <MapPin className="h-5 w-5 shrink-0 text-primary" />
+                        <span><strong className="block">Current location</strong><span className="text-xs text-muted-foreground">Open in Google Maps</span></span>
+                      </a>
+                    ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
+                      <button onClick={() => setViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
+                        <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
+                      </button>
                     ) : (
                       <p className="whitespace-pre-wrap break-words px-1 pr-16 text-[15px] leading-snug">{m.content}</p>
                     )}
@@ -365,9 +395,17 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
       <div className={cn("flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4", sel && "hidden")} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
         <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = ""; }} />
         {text ? null : (
-          <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
-            <ImageIcon className="h-5 w-5" />
-          </button>
+          <>
+            <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
+              <ImageIcon className="h-5 w-5" />
+            </button>
+            <button onClick={sendLocation} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send current location">
+              <MapPin className="h-5 w-5" />
+            </button>
+            <button onClick={() => setGiphyOpen(true)} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send GIF or sticker">
+              <Sticker className="h-5 w-5" />
+            </button>
+          </>
         )}
         <textarea
           value={text}
@@ -441,8 +479,14 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
           <img src={viewer} alt="Full size" className="max-h-full max-w-full rounded-lg object-contain" />
         </div>
       )}
+      {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
     </div>
   );
+}
+
+function parseAttachment(content: string | null): { url?: string; title?: string; mapsUrl?: string } | null {
+  if (!content) return null;
+  try { return JSON.parse(content) as { url?: string; title?: string; mapsUrl?: string }; } catch { return null; }
 }
 
 function Tick({ on }: { on: boolean }) {

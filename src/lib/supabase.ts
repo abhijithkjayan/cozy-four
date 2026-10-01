@@ -16,7 +16,7 @@ export type Message = {
   id: string;
   sender_id: string;
   receiver_id: string;
-  type: "text" | "image" | "audio" | "call";
+  type: "text" | "image" | "audio" | "call" | "location" | "gif" | "sticker";
   content: string | null;
   media_url: string | null;
   reply_to: string | null;

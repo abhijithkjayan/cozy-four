@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { supabase, wipeLocalCaches } from "@/lib/supabase";
 
-export const IDLE_LIMIT_MS = 10 * 60 * 1000; // auto logout after 10 minutes of no activity
+export const IDLE_LIMIT_MS = 5 * 60 * 1000; // auto logout after 5 minutes of no activity
 const WARN_MS = 60 * 1000;
 
 // Set paused=true while a call is running so a long call is not cut off.
@@ -14,7 +14,7 @@ export async function secureLogout() {
   try { if ("Notification" in window) (navigator as any).serviceWorker?.getRegistrations?.().then((r: any[]) => r.forEach((x) => x.unregister())); } catch {}
 }
 
-/** Logs the user out after 10 min without touching the app. Returns seconds left once the last minute starts. */
+/** Logs the user out after 5 min without touching the app. Returns seconds left once the last minute starts. */
 export function useIdleLogout() {
   const last = useRef(Date.now());
   const [left, setLeft] = useState<number | null>(null);

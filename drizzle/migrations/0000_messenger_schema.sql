@@ -9,7 +9,7 @@ create table public.messages (
   id uuid primary key default gen_random_uuid(),
   sender_id uuid not null references public.profiles(id) on delete cascade,
   receiver_id uuid not null references public.profiles(id) on delete cascade,
-  type text not null default 'text' check (type in ('text','image','audio','call')),
+  type text not null default 'text' check (type in ('text','image','audio','call','location','gif','sticker')),
   content text,
   media_url text,
   reply_to uuid references public.messages(id) on delete set null,
