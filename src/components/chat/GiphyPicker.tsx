@@ -21,7 +21,7 @@ const DEFAULT_QUERY = "game of thrones";
 
 export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [tab, setTab] = useState<"gif" | "sticker">("gif");
-  const [query, setQuery] = useState(DEFAULT_QUERY);
+  const [query, setQuery] = useState("");
   const [items, setItems] = useState<GiphyItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
