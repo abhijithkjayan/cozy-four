@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Search, X } from "lucide-react";
+import { giphySearch } from "@/lib/giphy.functions";
 
 type GiphyItem = {
   id: string;
@@ -26,22 +27,12 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const key = import.meta.env["VITE_GIPHY_API_KEY"];
-    if (!key) {
-      setError("Giphy is not configured yet.");
-      return;
-    }
-    const controller = new AbortController();
     setLoading(true);
     setError(null);
-    const endpoint = tab === "sticker" ? "stickers/search" : "gifs/search";
-    const params = new URLSearchParams({ api_key: key, q: query || DEFAULT_QUERY, limit: "24", rating: "pg-13" });
-    fetch(`https://api.giphy.com/v1/${endpoint}?${params}`, { signal: controller.signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("Giphy request failed"))))
-      .then((body: { data: GiphyItem[] }) => setItems(body.data ?? []))
-      .catch((e: unknown) => { if ((e as Error).name !== "AbortError") setError("Could not load Giphy results."); })
+    giphySearch({ data: { query: query || DEFAULT_QUERY, kind: tab } })
+      .then((data) => setItems(data as GiphyItem[]))
+      .catch(() => setError("Could not load Giphy results."))
       .finally(() => setLoading(false));
-    return () => controller.abort();
   }, [query, tab]);
 
   return (
