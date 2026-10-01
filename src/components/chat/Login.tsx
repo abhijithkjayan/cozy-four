@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { ArrowLeft, MessageCircle } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
+import lionLogo from "@/assets/lion-logo.png.asset.json";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
 import { ensureAccounts } from "@/lib/accounts.functions";
 
@@ -44,10 +45,8 @@ export function Login() {
     <div className="flex min-h-dvh items-center justify-center bg-chat-bg px-5 py-6" style={{ paddingTop: "max(1.5rem, env(safe-area-inset-top))", paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
       <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border bg-card p-8 shadow-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-            <MessageCircle className="h-7 w-7" />
-          </div>
-          <h1 className="text-xl font-semibold">JTWDFLC!🩸</h1>
+          <img src={lionLogo.url} alt="Lion's Den logo" className="h-20 w-20 rounded-2xl object-cover" />
+          <h1 className="text-xl font-semibold">Lion's Den</h1>
         </div>
         <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID</label>
         <input

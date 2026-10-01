@@ -8,7 +8,7 @@ import { ChatApp } from "@/components/chat/ChatApp";
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
-      { title: "JTWDFLC!🩸" },
+      { title: "Lion's Den" },
       { name: "robots", content: "noindex, nofollow, noarchive" },
     ],
   }),

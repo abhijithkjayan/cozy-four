@@ -6,8 +6,8 @@ const PAD = "_pad_secure";
 const USERS: { id: string; pw: string; old?: string }[] = [
   { id: "jamie", pw: "chiku", old: "user1" },
   { id: "cersi", pw: "vichu", old: "user2" },
-  { id: "user3", pw: "00000" },
-  { id: "user4", pw: "00000" },
+  { id: "tyrion", pw: "00000", old: "user3" },
+  { id: "tywin", pw: "00000", old: "user4" },
 ];
 
 // Idempotently creates/renames the fixed accounts + profiles. Only ever touches these fixed users.
