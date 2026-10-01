@@ -142,11 +142,13 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
     return path;
   };
 
-  const sendImage = async (f: File) => {
+  const sendImages = async (files: File[]) => {
     setUploading(true);
-    const path = await upload(f, f.name.split(".").pop() || "jpg");
+    for (const f of files) {
+      const path = await upload(f, f.name.split(".").pop() || "jpg");
+      if (path) insert({ type: "image", media_url: path });
+    }
     setUploading(false);
-    if (path) insert({ type: "image", media_url: path });
   };
 
   const sendVoice = async (blob: Blob, secs: number, mime: string) => {
@@ -393,7 +395,7 @@ export function Conversation({ me, peer, online, onBack, onSeen }: { me: Profile
       )}
 
       <div className={cn("flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4", sel && "hidden")} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
-        <input ref={fileRef} type="file" accept="image/*" hidden onChange={(e) => { const f = e.target.files?.[0]; if (f) sendImage(f); e.target.value = ""; }} />
+        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files || []).slice(0, 20); if (files.length) sendImages(files); e.target.value = ""; }} />
         {text ? null : (
           <>
             <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
