@@ -18,7 +18,7 @@ type Sig = {
   cand?: RTCIceCandidateInit;
 };
 type Info = { id: string; peer: Profile; video: boolean; role: "caller" | "callee"; offer?: RTCSessionDescriptionInit | undefined };
-type Phase = "idle" | "outgoing" | "incoming" | "active";
+type Phase = "idle" | "outgoing" | "incoming" | "connecting" | "active";
 
 const Ctx = createContext<{ startCall: (p: Profile, video: boolean) => void; busy: boolean }>({ startCall: () => {}, busy: false });
 export const useCalls = () => useContext(Ctx);
@@ -31,6 +31,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const [loud, setLoud] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
 
   const pc = useRef<RTCPeerConnection | null>(null);
   const local = useRef<MediaStream | null>(null);
@@ -44,6 +45,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const channels = useRef(new Map<string, Promise<RealtimeChannel>>());
   const localVid = useRef<HTMLVideoElement>(null);
   const remoteVid = useRef<HTMLVideoElement>(null);
+  const remoteAudio = useRef<HTMLAudioElement>(null);
   const profilesRef = useRef(profiles);
   profilesRef.current = profiles;
 
@@ -72,7 +74,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     remote.current = null;
     pendingIce.current = [];
     startedAt.current = null;
-    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setElapsed(0);
+    if (remoteVid.current) remoteVid.current.srcObject = null;
+    if (remoteAudio.current) remoteAudio.current.srcObject = null;
+    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0);
     setI(null);
     setP("idle");
   }, []);
@@ -100,12 +104,17 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     remote.current = new MediaStream();
     p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
     p.ontrack = (e) => {
-      remote.current!.addTrack(e.track);
+      if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
       if (e.track.kind === "video") setHasRemoteVideo(true);
-      if (remoteVid.current) remoteVid.current.srcObject = remote.current;
+      const player = i.video ? remoteVid.current : remoteAudio.current;
+      if (player) {
+        player.srcObject = remote.current;
+        void player.play().then(() => setPlaybackBlocked(false)).catch(() => setPlaybackBlocked(true));
+      }
     };
     p.onconnectionstatechange = () => {
-      if (p.connectionState === "failed") finish(true);
+      if (p.connectionState === "connected") goActive();
+      else if (p.connectionState === "failed") finish(true);
     };
     local.current!.getTracks().forEach((t) => p.addTrack(t, local.current!));
     pc.current = p;
@@ -121,10 +130,20 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   };
 
   const goActive = () => {
+    if (startedAt.current) return;
     stopRing();
     clearTimeout(timeout.current);
     startedAt.current = Date.now();
     setP("active");
+    const i = infoRef.current;
+    if (i) supabase.from("calls").update({ status: "active" }).eq("id", i.id).then();
+  };
+
+  const beginConnecting = () => {
+    stopRing();
+    clearTimeout(timeout.current);
+    setP("connecting");
+    timeout.current = window.setTimeout(() => finish(true), 20000);
   };
 
   const startCall = useCallback(async (peer: Profile, video: boolean) => {
@@ -165,8 +184,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const ans = await p.createAnswer();
     await p.setLocalDescription(ans);
     send(i.peer.id, { kind: "answer", callId: i.id, sdp: ans });
-    supabase.from("calls").update({ status: "active" }).eq("id", i.id).then();
-    goActive();
+    beginConnecting();
   };
 
   const decline = () => {
@@ -196,7 +214,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         case "answer":
           await pc.current?.setRemoteDescription(s.sdp!);
           await flushIce();
-          goActive();
+          beginConnecting();
           break;
         case "ice":
           if (pc.current?.remoteDescription) await pc.current.addIceCandidate(s.cand!).catch(() => {});
@@ -221,8 +239,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   useEffect(() => {
     if (phase === "idle") return;
     if (localVid.current && local.current) localVid.current.srcObject = local.current;
-    if (remoteVid.current && remote.current) remoteVid.current.srcObject = remote.current;
-  }, [phase, hasRemoteVideo]);
+    if (info?.video && remoteVid.current && remote.current) remoteVid.current.srcObject = remote.current;
+    if (info && !info.video && remoteAudio.current && remote.current) remoteAudio.current.srcObject = remote.current;
+  }, [phase, hasRemoteVideo, info]);
 
   useEffect(() => {
     if (phase !== "active") return;
@@ -242,7 +261,13 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   useEffect(() => {
     if (remoteVid.current) remoteVid.current.volume = loud ? 1 : 0.35;
+    if (remoteAudio.current) remoteAudio.current.volume = loud ? 1 : 0.35;
   }, [loud, phase]);
+
+  const enablePlayback = () => {
+    const player = info?.video ? remoteVid.current : remoteAudio.current;
+    void player?.play().then(() => setPlaybackBlocked(false)).catch(() => setPlaybackBlocked(true));
+  };
 
   const toggleMute = () => {
     local.current?.getAudioTracks().forEach((t) => (t.enabled = muted));
@@ -272,6 +297,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       {children}
       {info && phase !== "idle" && (
         <div className="fixed inset-0 z-50 flex flex-col bg-call-bg text-call-fg">
+          {!info.video && <audio ref={remoteAudio} autoPlay />}
           <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
           {showVideo && (
             <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg sm:h-48 sm:w-36", camOff && "opacity-0", facing.current === "user" && "-scale-x-100")} />
@@ -280,8 +306,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
             {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
             <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
             <p className="mt-1 text-sm opacity-75 drop-shadow">
-              {phase === "incoming" ? `Incoming ${info.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : fmtDur(elapsed)}
+              {phase === "incoming" ? `Incoming ${info.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : phase === "connecting" ? "Connecting…" : fmtDur(elapsed)}
             </p>
+            {playbackBlocked && <button onClick={enablePlayback} className="mt-4 rounded-full bg-call-fg/15 px-4 py-2 text-sm">Tap to enable audio</button>}
           </div>
           <div className="relative z-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
             {phase === "incoming" ? (
