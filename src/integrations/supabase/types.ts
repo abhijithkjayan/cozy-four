@@ -17,7 +17,6 @@ export type Database = {
       calls: {
         Row: {
           caller_id: string
-          connected_at: string | null
           ended_at: string | null
           id: string
           receiver_id: string
@@ -27,7 +26,6 @@ export type Database = {
         }
         Insert: {
           caller_id: string
-          connected_at?: string | null
           ended_at?: string | null
           id?: string
           receiver_id: string
@@ -37,7 +35,6 @@ export type Database = {
         }
         Update: {
           caller_id?: string
-          connected_at?: string | null
           ended_at?: string | null
           id?: string
           receiver_id?: string
@@ -56,32 +53,6 @@ export type Database = {
           {
             foreignKeyName: "calls_receiver_id_fkey"
             columns: ["receiver_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      login_activity: {
-        Row: {
-          id: string
-          logged_in_at: string
-          user_id: string
-        }
-        Insert: {
-          id?: string
-          logged_in_at?: string
-          user_id: string
-        }
-        Update: {
-          id?: string
-          logged_in_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "login_activity_user_id_fkey"
-            columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -158,7 +129,6 @@ export type Database = {
           display_name: string
           id: string
           last_seen: string | null
-          status_text: string
           user_id: string
         }
         Insert: {
@@ -166,7 +136,6 @@ export type Database = {
           display_name: string
           id: string
           last_seen?: string | null
-          status_text?: string
           user_id: string
         }
         Update: {
@@ -174,43 +143,9 @@ export type Database = {
           display_name?: string
           id?: string
           last_seen?: string | null
-          status_text?: string
           user_id?: string
         }
         Relationships: []
-      }
-      pinned_chats: {
-        Row: {
-          peer_id: string
-          pinned_at: string
-          user_id: string
-        }
-        Insert: {
-          peer_id: string
-          pinned_at?: string
-          user_id: string
-        }
-        Update: {
-          peer_id?: string
-          pinned_at?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "pinned_chats_peer_id_fkey"
-            columns: ["peer_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "pinned_chats_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
       }
     }
     Views: {
