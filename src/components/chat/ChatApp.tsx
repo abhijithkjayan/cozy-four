@@ -281,7 +281,7 @@ export function ChatApp({ userId }: { userId: string }) {
             <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={closeChat} onSeen={clearUnread} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
-              <p className="text-lg font-medium text-foreground">JTWDFLC!🩸</p>
+              <p className="text-lg font-medium text-foreground">Lion's Den</p>
               <p className="text-sm">Pick a chat to start messaging.</p>
             </div>
           )}
