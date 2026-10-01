@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { Profile } from "@/lib/supabase";
 
-export function Avatar({ p, online, size = 44 }: { p: Profile; online?: boolean; size?: number }) {
+export function Avatar({ p, online, away, size = 44 }: { p: Profile; online?: boolean; away?: boolean; size?: number }) {
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       {p.avatar_url ? (
@@ -15,11 +15,11 @@ export function Avatar({ p, online, size = 44 }: { p: Profile; online?: boolean;
           {p.display_name.slice(-1)}
         </div>
       )}
-      {online !== undefined && (
+      {(online !== undefined || away !== undefined) && (
         <span
           className={cn(
             "absolute bottom-0 right-0 h-3 w-3 rounded-full border-2 border-card",
-            online ? "bg-online" : "bg-muted-foreground/40",
+            online ? "bg-online" : away ? "bg-yellow-400 dark:bg-yellow-300" : "bg-muted-foreground/40",
           )}
         />
       )}

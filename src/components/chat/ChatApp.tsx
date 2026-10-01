@@ -27,6 +27,7 @@ export function ChatApp({ userId }: { userId: string }) {
   const [peers, setPeers] = useState<Profile[]>([]);
   const [all, setAll] = useState<Profile[]>([]);
   const [online, setOnline] = useState<Set<string>>(new Set());
+  const [away, setAway] = useState<Set<string>>(new Set());
   const [sel, setSel] = useState<string | null>(null);
   const [last, setLast] = useState<Record<string, Message | undefined>>({});
   const [unread, setUnread] = useState<Record<string, number>>({});
@@ -127,8 +128,25 @@ export function ChatApp({ userId }: { userId: string }) {
   useEffect(() => {
     if (!me) return;
     const ch = supabase.channel("presence:global", { config: { presence: { key: me.id } } });
-    ch.on("presence", { event: "sync" }, () => setOnline(new Set(Object.keys(ch.presenceState()))));
-    ch.subscribe((s) => s === "SUBSCRIBED" && ch.track({ at: Date.now() }));
+    const syncPresence = () => {
+      const active = new Set<string>();
+      const inactive = new Set<string>();
+      for (const [id, presences] of Object.entries(ch.presenceState())) {
+        if (presences.some((presence) => presence.status === "online")) active.add(id);
+        else inactive.add(id);
+      }
+      setOnline(active);
+      setAway(inactive);
+    };
+    const trackPresence = () => {
+      void ch.track({
+        at: Date.now(),
+        status: document.visibilityState === "visible" ? "online" : "away",
+      });
+    };
+    ch.on("presence", { event: "sync" }, syncPresence);
+    ch.subscribe((s) => s === "SUBSCRIBED" && trackPresence());
+    document.addEventListener("visibilitychange", trackPresence);
     const beat = () => supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", me.id).then();
     beat();
     const t = setInterval(beat, 30000);
@@ -142,6 +160,7 @@ export function ChatApp({ userId }: { userId: string }) {
     return () => {
       clearInterval(t);
       beat();
+      document.removeEventListener("visibilitychange", trackPresence);
       window.removeEventListener("beforeunload", beat);
       supabase.removeChannel(ch);
       supabase.removeChannel(pch);
@@ -200,7 +219,7 @@ export function ChatApp({ userId }: { userId: string }) {
     return (
       <div className="app-shell flex flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="max-w-md text-muted-foreground">Your account has no profile yet. Run the setup script (supabase-setup.sql) in the database, then sign in again.</p>
-        <button onClick={() => secureLogout()} className="rounded-lg border px-4 py-2 text-sm">Log out</button>
+        <button onClick={() => secureLogout()} className="rounded-lg border px-4 py-2 text-sm text-muted-foreground hover:bg-muted">Log out</button>
       </div>
     );
   if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
@@ -230,7 +249,7 @@ export function ChatApp({ userId }: { userId: string }) {
               <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
             <div className="flex items-center gap-1">
-              <button onClick={() => secureLogout()} className="flex items-center gap-1 rounded-lg px-2 py-2 text-xs font-medium text-destructive hover:bg-destructive/10" aria-label="Log out">
+              <button onClick={() => secureLogout()} className="flex items-center gap-1 rounded-lg px-2 py-2 text-xs font-medium text-muted-foreground hover:bg-muted" aria-label="Log out">
                 <LogOut className="h-4 w-4" />
                 <span className="hidden sm:inline">Log out</span>
               </button>
@@ -243,7 +262,7 @@ export function ChatApp({ userId }: { userId: string }) {
                 {me.avatar_url && <DropdownMenuItem onClick={() => setAvatar(null)}><Trash2 className="mr-2 h-4 w-4" />Remove profile photo</DropdownMenuItem>}
                 <DropdownMenuItem onClick={toggleDark}>{dark ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}{dark ? "Light mode" : "Dark mode"}</DropdownMenuItem>
                 <DropdownMenuItem onClick={askNotify}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => secureLogout()}><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => secureLogout()} className="text-muted-foreground focus:text-foreground"><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
             </div>
@@ -259,7 +278,7 @@ export function ChatApp({ userId }: { userId: string }) {
                     onClick={() => openChat(p.id)}
                     className={cn("flex w-full items-center gap-3 px-4 py-3 text-left transition active:bg-muted md:hover:bg-muted", sel === p.id && "bg-muted")}
                   >
-                    <Avatar p={p} online={online.has(p.id)} />
+                    <Avatar p={p} online={online.has(p.id)} away={away.has(p.id)} />
                     <div className="min-w-0 flex-1 border-b border-border/60 pb-3">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="truncate font-medium">{p.display_name}</span>
