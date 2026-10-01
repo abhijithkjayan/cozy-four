@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { MessageCircle } from "lucide-react";
+import { ArrowLeft, MessageCircle } from "lucide-react";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
 import { ensureAccounts } from "@/lib/accounts.functions";
 
@@ -78,6 +78,13 @@ export function Login() {
         >
           {busy ? "Signing in…" : "Sign in"}
         </button>
+        <a
+          href="https://pixel-perfect-capture-4516.lovable.app/"
+          className="mt-3 flex min-h-11 w-full items-center justify-center gap-2 rounded-lg border px-4 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted"
+        >
+          <ArrowLeft aria-hidden="true" size={16} />
+          Back to TIPS
+        </a>
       </form>
     </div>
   );
