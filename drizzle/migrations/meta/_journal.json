@@ -8,6 +8,20 @@
       "when": 1790808355870,
       "tag": "0000_messenger_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790808355871,
+      "tag": "0001_attachment_messages",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790874294771,
+      "tag": "0002_restrict_profile_reads",
+      "breakpoints": true
     }
   ]
 }
