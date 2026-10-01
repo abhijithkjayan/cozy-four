@@ -13,17 +13,17 @@ export function Login() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErr("");
-    // Brute-force protection: lock after 5 wrong attempts
+    // Lock this browser for one minute after three wrong attempts.
     let until = 0;
-    try { until = Number(localStorage.getItem("lk-until") || 0); } catch {}
+    try { until = Number(localStorage.getItem("lk-until") || 0); } catch { /* Storage can be unavailable. */ }
     if (Date.now() < until) return setErr(`Too many attempts. Try again in ${Math.ceil((until - Date.now()) / 1000)}s.`);
     setBusy(true);
     const creds = { email: toEmail(uid), password: pw + PASSWORD_PAD };
-    let { error } = await supabase.auth.signInWithPassword(creds);
+    let { data: authData, error } = await supabase.auth.signInWithPassword(creds);
     if (error) {
       try {
         await ensureAccounts();
-        ({ error } = await supabase.auth.signInWithPassword(creds));
+        ({ data: authData, error } = await supabase.auth.signInWithPassword(creds));
       } catch {
         /* ignore */
       }
@@ -31,13 +31,16 @@ export function Login() {
     setBusy(false);
     if (error) {
       let n = 0;
-      try { n = Number(localStorage.getItem("lk-n") || 0) + 1; localStorage.setItem("lk-n", String(n)); } catch {}
-      if (n >= 5) {
-        try { localStorage.setItem("lk-until", String(Date.now() + Math.min(15, n - 4) * 60_000)); } catch {}
-        setErr("Too many attempts. Locked for a few minutes.");
+      try { n = Number(localStorage.getItem("lk-n") || 0) + 1; localStorage.setItem("lk-n", String(n)); } catch { /* Storage can be unavailable. */ }
+      if (n >= 3) {
+        try { localStorage.setItem("lk-until", String(Date.now() + 60_000)); } catch { /* Storage can be unavailable. */ }
+        setErr("Too many attempts. Try again in 1 minute.");
       } else setErr("Wrong User ID or password.");
     } else {
-      try { localStorage.removeItem("lk-n"); localStorage.removeItem("lk-until"); } catch {}
+      try { localStorage.removeItem("lk-n"); localStorage.removeItem("lk-until"); } catch { /* Storage can be unavailable. */ }
+      if (authData.user) {
+        void supabase.from("login_activity").insert({ user_id: authData.user.id });
+      }
     }
   };
 

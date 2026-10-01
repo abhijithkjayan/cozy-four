@@ -136,7 +136,13 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     startedAt.current = Date.now();
     setP("active");
     const i = infoRef.current;
-    if (i) supabase.from("calls").update({ status: "active" }).eq("id", i.id).then();
+    if (i) {
+      supabase
+        .from("calls")
+        .update({ status: "active", connected_at: new Date().toISOString() })
+        .eq("id", i.id)
+        .then();
+    }
   };
 
   const beginConnecting = () => {

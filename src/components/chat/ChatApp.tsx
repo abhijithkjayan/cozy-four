@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, Camera, LogOut, Moon, MoreVertical, Sun, Trash2 } from "lucide-react";
+import { Bell, Camera, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
 import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
 import { messageTone, notify } from "@/lib/tones";
@@ -8,6 +8,8 @@ import { imageToAvatar, secureLogout, useIdleLogout } from "@/lib/security";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
 import { Conversation } from "./Conversation";
+import { CallLog } from "./CallLog";
+import { ProfilePanel } from "./ProfilePanel";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 export function preview(m: Message | undefined, me: string) {
@@ -33,6 +35,10 @@ export function ChatApp({ userId }: { userId: string }) {
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [missing, setMissing] = useState(false);
   const [dark, setDark] = useState(false);
+  const [pinned, setPinned] = useState<Set<string>>(new Set());
+  const [listView, setListView] = useState<"chats" | "calls">("chats");
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileTarget, setProfileTarget] = useState<Profile | null>(null);
   const { left, stay } = useIdleLogout();
   const photoRef = useRef<HTMLInputElement>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
@@ -51,6 +57,28 @@ export function ChatApp({ userId }: { userId: string }) {
   const pickPhoto = async (f: File | undefined) => {
     if (!f) return;
     try { await setAvatar(await imageToAvatar(f)); } catch { alert("That image could not be used. Try another photo."); }
+  };
+
+  const togglePin = async (peerId: string) => {
+    if (!me) return;
+    if (pinned.has(peerId)) {
+      const { error } = await supabase.from("pinned_chats").delete().eq("user_id", me.id).eq("peer_id", peerId);
+      if (error) return alert("Could not unpin this chat. Please try again.");
+      setPinned((current) => {
+        const next = new Set(current);
+        next.delete(peerId);
+        return next;
+      });
+      return;
+    }
+    const { error } = await supabase.from("pinned_chats").insert({ user_id: me.id, peer_id: peerId });
+    if (error) return alert("Could not pin this chat. Please try again.");
+    setPinned((current) => new Set(current).add(peerId));
+  };
+
+  const openProfile = (profile: Profile) => {
+    setProfileTarget(profile);
+    setProfileOpen(true);
   };
 
   // Mobile: follow the visible viewport so the on-screen keyboard never covers the input
@@ -103,6 +131,8 @@ export function ChatApp({ userId }: { userId: string }) {
       if (!mine) return setMissing(true);
       setMe(mine);
       setAll(list);
+      const { data: savedPins } = await supabase.from("pinned_chats").select("peer_id").eq("user_id", userId);
+      setPinned(new Set((savedPins ?? []).map((row) => row.peer_id)));
       const others = list.filter((p) => p.id !== userId);
       setPeers(others);
       const l: Record<string, Message | undefined> = {};
@@ -153,7 +183,12 @@ export function ChatApp({ userId }: { userId: string }) {
     const pch = supabase
       .channel("profiles-changes")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, ({ new: p }) =>
-        setPeers((ps) => ps.map((x) => (x.id === (p as Profile).id ? (p as Profile) : x))),
+        {
+          const updated = p as Profile;
+          setPeers((ps) => ps.map((x) => (x.id === updated.id ? updated : x)));
+          setAll((ps) => ps.map((x) => (x.id === updated.id ? updated : x)));
+          setMe((current) => current?.id === updated.id ? updated : current);
+        },
       )
       .subscribe();
     window.addEventListener("beforeunload", beat);
@@ -224,7 +259,10 @@ export function ChatApp({ userId }: { userId: string }) {
     );
   if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
 
-  const sorted = [...peers].sort((a, b) => new Date(last[b.id]?.created_at ?? 0).getTime() - new Date(last[a.id]?.created_at ?? 0).getTime());
+  const sorted = [...peers].sort((a, b) => {
+    const pinOrder = Number(pinned.has(b.id)) - Number(pinned.has(a.id));
+    return pinOrder || new Date(last[b.id]?.created_at ?? 0).getTime() - new Date(last[a.id]?.created_at ?? 0).getTime();
+  });
   const peer = peers.find((p) => p.id === sel);
 
   return (
@@ -241,11 +279,13 @@ export function ChatApp({ userId }: { userId: string }) {
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
           <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
             <div className="flex items-center gap-3">
-              <button onClick={() => photoRef.current?.click()} disabled={photoBusy} className="relative rounded-full" aria-label="Change profile photo">
+              <button onClick={() => openProfile(me)} className="relative rounded-full" aria-label="Open profile and login activity">
                 <Avatar p={me} size={38} />
-                <span className="absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-primary text-primary-foreground"><Camera className="h-2.5 w-2.5" /></span>
               </button>
-              <span className="font-semibold">{me.display_name}</span>
+              <button onClick={() => openProfile(me)} className="min-w-0 text-left">
+                <span className="block truncate font-semibold">{me.display_name}</span>
+                <span className="block max-w-36 truncate text-xs text-muted-foreground">{me.status_text || "Set a status"}</span>
+              </button>
               <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
             <div className="flex items-center gap-1">
@@ -267,37 +307,49 @@ export function ChatApp({ userId }: { userId: string }) {
             </DropdownMenu>
             </div>
           </header>
-          <h2 className="px-4 pb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Chats</h2>
-          <ul className="flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
+          <div className="flex border-b px-3" role="tablist" aria-label="Chats and calls">
+            <button type="button" role="tab" aria-selected={listView === "chats"} onClick={() => setListView("chats")} className={cn("flex h-11 flex-1 items-center justify-center gap-2 border-b-2 text-sm font-medium", listView === "chats" ? "border-primary text-primary" : "border-transparent text-muted-foreground")}>
+              <MessageSquare size={16} /> Chats
+            </button>
+            <button type="button" role="tab" aria-selected={listView === "calls"} onClick={() => setListView("calls")} className={cn("flex h-11 flex-1 items-center justify-center gap-2 border-b-2 text-sm font-medium", listView === "calls" ? "border-primary text-primary" : "border-transparent text-muted-foreground")}>
+              <PhoneCall size={16} /> Calls
+            </button>
+          </div>
+          {listView === "calls" ? (
+            <CallLog userId={me.id} profiles={all} onViewProfile={openProfile} />
+          ) : <ul className="flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
             {sorted.map((p) => {
               const m = last[p.id];
               const n = unread[p.id] ?? 0;
               return (
                 <li key={p.id}>
-                  <button
-                    onClick={() => openChat(p.id)}
-                    className={cn("flex w-full items-center gap-3 px-4 py-3 text-left transition active:bg-muted md:hover:bg-muted", sel === p.id && "bg-muted")}
-                  >
-                    <Avatar p={p} online={online.has(p.id)} away={away.has(p.id)} />
-                    <div className="min-w-0 flex-1 border-b border-border/60 pb-3">
+                  <div className={cn("flex items-center gap-1 px-2 transition", sel === p.id && "bg-muted")}>
+                    <button onClick={() => openChat(p.id)} className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-2 text-left active:bg-muted md:hover:bg-muted">
+                      <Avatar p={p} online={online.has(p.id)} away={away.has(p.id)} />
+                      <div className="min-w-0 flex-1 border-b border-border/60 pb-2">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="truncate font-medium">{p.display_name}</span>
                         {m && <span className={cn("shrink-0 text-xs", n ? "font-medium text-primary" : "text-muted-foreground")}>{listTime(m.created_at)}</span>}
                       </div>
+                      {p.status_text && <div className="truncate text-xs text-muted-foreground">{p.status_text}</div>}
                       <div className="mt-0.5 flex items-center justify-between gap-2">
                         <span className="truncate text-sm text-muted-foreground">{preview(m, me.id)}</span>
                         {n > 0 && <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">{n}</span>}
                       </div>
-                    </div>
-                  </button>
+                      </div>
+                    </button>
+                    <button type="button" onClick={() => void togglePin(p.id)} className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full hover:bg-muted", pinned.has(p.id) ? "text-primary" : "text-muted-foreground")} aria-label={pinned.has(p.id) ? `Unpin ${p.display_name}` : `Pin ${p.display_name}`} title={pinned.has(p.id) ? "Unpin chat" : "Pin chat"}>
+                      {pinned.has(p.id) ? <PinOff size={17} /> : <Pin size={17} />}
+                    </button>
+                  </div>
                 </li>
               );
             })}
-          </ul>
+          </ul>}
         </aside>
         <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={closeChat} onSeen={clearUnread} />
+            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">Lion's Den</p>
@@ -307,6 +359,17 @@ export function ChatApp({ userId }: { userId: string }) {
         </main>
         </div>
       </div>
+      <ProfilePanel
+        profile={profileTarget ?? me}
+        open={profileOpen}
+        onOpenChange={setProfileOpen}
+        editable={(profileTarget ?? me).id === me.id}
+        onStatusSaved={(statusText) => {
+          setMe((current) => current ? { ...current, status_text: statusText } : current);
+          setPeers((current) => current.map((profile) => profile.id === me.id ? { ...profile, status_text: statusText } : profile));
+          setAll((current) => current.map((profile) => profile.id === me.id ? { ...profile, status_text: statusText } : profile));
+        }}
+      />
     </CallProvider>
   );
 }

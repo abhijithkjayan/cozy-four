@@ -8,6 +8,7 @@ export type Profile = {
   id: string;
   user_id: string;
   display_name: string;
+  status_text: string;
   avatar_url: string | null;
   last_seen: string | null;
 };
