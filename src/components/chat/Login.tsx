@@ -15,8 +15,13 @@ export function Login() {
     setErr("");
     // Lock this browser for one minute after three wrong attempts.
     let until = 0;
-    try { until = Number(localStorage.getItem("lk-until") || 0); } catch { /* Storage can be unavailable. */ }
-    if (Date.now() < until) return setErr(`Too many attempts. Try again in ${Math.ceil((until - Date.now()) / 1000)}s.`);
+    try {
+      until = Number(localStorage.getItem("lk-until") || 0);
+    } catch {
+      /* Storage can be unavailable. */
+    }
+    if (Date.now() < until)
+      return setErr(`Too many attempts. Try again in ${Math.ceil((until - Date.now()) / 1000)}s.`);
     setBusy(true);
     const creds = { email: toEmail(uid), password: pw + PASSWORD_PAD };
     let { data: authData, error } = await supabase.auth.signInWithPassword(creds);
@@ -31,24 +36,51 @@ export function Login() {
     setBusy(false);
     if (error) {
       let n = 0;
-      try { n = Number(localStorage.getItem("lk-n") || 0) + 1; localStorage.setItem("lk-n", String(n)); } catch { /* Storage can be unavailable. */ }
+      try {
+        n = Number(localStorage.getItem("lk-n") || 0) + 1;
+        localStorage.setItem("lk-n", String(n));
+      } catch {
+        /* Storage can be unavailable. */
+      }
       if (n >= 3) {
-        try { localStorage.setItem("lk-until", String(Date.now() + 60_000)); } catch { /* Storage can be unavailable. */ }
+        try {
+          localStorage.setItem("lk-until", String(Date.now() + 60_000));
+        } catch {
+          /* Storage can be unavailable. */
+        }
         setErr("Too many attempts. Try again in 1 minute.");
       } else setErr("Wrong User ID or password.");
     } else {
-      try { localStorage.removeItem("lk-n"); localStorage.removeItem("lk-until"); } catch { /* Storage can be unavailable. */ }
+      try {
+        localStorage.removeItem("lk-n");
+        localStorage.removeItem("lk-until");
+      } catch {
+        /* Storage can be unavailable. */
+      }
       if (authData.user) {
-        void supabase.from("login_activity").insert({ user_id: authData.user.id });
+        const { error: activityError } = await supabase
+          .from("login_activity")
+          .insert({ user_id: authData.user.id });
+        if (activityError) console.error("Could not record login activity", activityError);
       }
     }
   };
 
   return (
-    <div className="flex min-h-dvh items-center justify-center bg-chat-bg px-5 py-6" style={{ paddingTop: "max(1.5rem, env(safe-area-inset-top))", paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}>
+    <div
+      className="flex min-h-dvh items-center justify-center bg-chat-bg px-5 py-6"
+      style={{
+        paddingTop: "max(1.5rem, env(safe-area-inset-top))",
+        paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))",
+      }}
+    >
       <form onSubmit={submit} className="w-full max-w-sm rounded-2xl border bg-card p-8 shadow-sm">
         <div className="mb-8 flex flex-col items-center gap-3">
-          <img src={lionLogo.url} alt="Lion's Den logo" className="h-20 w-20 rounded-2xl object-cover" />
+          <img
+            src={lionLogo.url}
+            alt="Lion's Den logo"
+            className="h-20 w-20 rounded-2xl object-cover"
+          />
           <h1 className="text-xl font-semibold">Lion's Den</h1>
         </div>
         <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID</label>

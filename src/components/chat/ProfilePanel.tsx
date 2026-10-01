@@ -31,6 +31,7 @@ export function ProfilePanel({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [activityError, setActivityError] = useState("");
 
   useEffect(() => setStatus(profile.status_text ?? ""), [profile.id, profile.status_text]);
 
@@ -44,9 +45,10 @@ export function ProfilePanel({
       .eq("user_id", profile.id)
       .order("logged_in_at", { ascending: false })
       .limit(30)
-      .then(({ data }) => {
+      .then(({ data, error: loadError }) => {
         if (active) {
           setEvents(data ?? []);
+          setActivityError(loadError?.message ?? "");
           setLoading(false);
         }
       });
@@ -65,7 +67,7 @@ export function ProfilePanel({
       .eq("id", profile.id);
     setSaving(false);
     if (saveError) {
-      setError("Could not save status. Please try again.");
+      setError(`Could not save status: ${saveError.message}`);
       return;
     }
     setStatus(cleanStatus);
@@ -129,6 +131,10 @@ export function ProfilePanel({
           </h3>
           {loading ? (
             <p className="text-sm text-muted-foreground">Loading activity…</p>
+          ) : activityError ? (
+            <p className="text-sm text-destructive">
+              Could not load login activity: {activityError}
+            </p>
           ) : events.length ? (
             <ol className="max-h-52 divide-y overflow-y-auto rounded-lg border">
               {events.map((event) => (
