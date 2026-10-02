@@ -119,7 +119,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const buildPc = async (i: Info) => {
     const p = new RTCPeerConnection({ iceServers: await loadIceServers(), iceCandidatePoolSize: 4 });
     remote.current = new MediaStream();
-    p.onicecandidate = (e) => console.log("rtc-cand", e.candidate?.type, e.candidate?.protocol) as any || e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
+    p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
     p.ontrack = (e) => {
       if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
       if (e.track.kind === "video") setHasRemoteVideo(true);
@@ -149,7 +149,6 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     p.oniceconnectionstatechange = onState;
     local.current!.getTracks().forEach((t) => p.addTrack(t, local.current!));
     pc.current = p;
-    (window as any).__pc = p; // DEBUG
     return p;
   };
 
@@ -236,7 +235,6 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const ch = supabase.channel(`call:${me.id}`);
     ch.on("broadcast", { event: "signal" }, async ({ payload }) => {
       const s = payload as Sig;
-      console.log("rtc-sig", s.kind); // DEBUG
       const cur = infoRef.current;
       if (s.kind === "offer") {
         if (cur) return send(s.from, { kind: "busy", callId: s.callId });
