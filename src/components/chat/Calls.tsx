@@ -119,7 +119,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const buildPc = async (i: Info) => {
     const p = new RTCPeerConnection({ iceServers: await loadIceServers(), iceCandidatePoolSize: 4 });
     remote.current = new MediaStream();
-    p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
+    p.onicecandidate = (e) => console.log("rtc-cand", e.candidate?.type, e.candidate?.protocol) as any || e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
     p.ontrack = (e) => {
       if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
       if (e.track.kind === "video") setHasRemoteVideo(true);
