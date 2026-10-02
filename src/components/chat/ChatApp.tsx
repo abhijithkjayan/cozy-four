@@ -184,10 +184,27 @@ export function ChatApp({ userId }: { userId: string }) {
       .channel("profiles-changes")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, ({ new: p }) =>
         {
-          const updated = p as Profile;
-          setPeers((ps) => ps.map((x) => (x.id === updated.id ? updated : x)));
-          setAll((ps) => ps.map((x) => (x.id === updated.id ? updated : x)));
-          setMe((current) => current?.id === updated.id ? updated : current);
+          // Large values (the photo) can be left out of live updates when they didn't change,
+          // so keep the photo we already have and re-check it from the server.
+          const incoming = p as Partial<Profile> & { id: string };
+          const merge = (x: Profile) => {
+            if (x.id !== incoming.id) return x;
+            const next = { ...x, ...incoming } as Profile;
+            if (!incoming.avatar_url && x.avatar_url) next.avatar_url = x.avatar_url;
+            return next;
+          };
+          setPeers((ps) => ps.map(merge));
+          setAll((ps) => ps.map(merge));
+          setMe((current) => (current ? merge(current) : current));
+          if (!incoming.avatar_url) {
+            void supabase.from("profiles").select("avatar_url").eq("id", incoming.id).maybeSingle().then(({ data }) => {
+              if (!data) return;
+              const fix = (x: Profile) => (x.id === incoming.id ? { ...x, avatar_url: data.avatar_url } : x);
+              setPeers((ps) => ps.map(fix));
+              setAll((ps) => ps.map(fix));
+              setMe((current) => (current ? fix(current) : current));
+            });
+          }
         },
       )
       .subscribe();
