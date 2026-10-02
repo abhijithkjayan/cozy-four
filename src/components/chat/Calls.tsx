@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState, ty
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Mic, MicOff, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
-import { ICE_SERVERS } from "@/lib/ice";
+import { loadIceServers } from "@/lib/ice";
 import { startRing, stopRing, notify } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
 import { idleState } from "@/lib/security";
@@ -37,6 +37,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const local = useRef<MediaStream | null>(null);
   const remote = useRef<MediaStream | null>(null);
   const pendingIce = useRef<RTCIceCandidateInit[]>([]);
+  const earlyIce = useRef(new Map<string, RTCIceCandidateInit[]>());
   const infoRef = useRef<Info | null>(null);
   const phaseRef = useRef<Phase>("idle");
   const startedAt = useRef<number | null>(null);
@@ -55,13 +56,29 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const send = useCallback(async (to: string, s: Omit<Sig, "from">) => {
     let ch = channels.current.get(to);
     if (!ch) {
-      ch = new Promise<RealtimeChannel>((res) => {
-        const c = supabase.channel(`call:${to}`);
-        c.subscribe((st) => st === "SUBSCRIBED" && res(c));
+      ch = new Promise<RealtimeChannel>((res, rej) => {
+        const c = supabase.channel(`call:${to}`, { config: { broadcast: { ack: true } } });
+        c.subscribe((st) => {
+          if (st === "SUBSCRIBED") res(c);
+          else if (st === "CHANNEL_ERROR" || st === "TIMED_OUT" || st === "CLOSED") {
+            channels.current.delete(to);
+            supabase.removeChannel(c);
+            rej(new Error(st));
+          }
+        });
       });
       channels.current.set(to, ch);
     }
-    (await ch).send({ type: "broadcast", event: "signal", payload: { ...s, from: me.id } });
+    try {
+      (await ch).send({ type: "broadcast", event: "signal", payload: { ...s, from: me.id } });
+    } catch {
+      // Channel failed; retry once on a fresh channel
+      channels.current.delete(to);
+      const c = supabase.channel(`call:${to}`);
+      await new Promise<void>((res) => c.subscribe((st) => st === "SUBSCRIBED" && res()));
+      channels.current.set(to, Promise.resolve(c));
+      c.send({ type: "broadcast", event: "signal", payload: { ...s, from: me.id } });
+    }
   }, [me.id]);
 
   const cleanup = useCallback(() => {
@@ -99,8 +116,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanup, send]);
 
-  const buildPc = (i: Info) => {
-    const p = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const buildPc = async (i: Info) => {
+    const p = new RTCPeerConnection({ iceServers: await loadIceServers(), iceCandidatePoolSize: 4 });
     remote.current = new MediaStream();
     p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
     p.ontrack = (e) => {
@@ -112,10 +129,24 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         void player.play().then(() => setPlaybackBlocked(false)).catch(() => setPlaybackBlocked(true));
       }
     };
-    p.onconnectionstatechange = () => {
-      if (p.connectionState === "connected") goActive();
-      else if (p.connectionState === "failed") finish(true);
+    let dropTimer: number | undefined;
+    const onState = () => {
+      const c = p.connectionState, ice = p.iceConnectionState;
+      if (c === "connected" || ice === "connected" || ice === "completed") {
+        clearTimeout(dropTimer);
+        goActive();
+      } else if (c === "failed" || ice === "failed") {
+        // Try once to find a new route before giving up
+        try { p.restartIce(); } catch {}
+        clearTimeout(dropTimer);
+        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 10000);
+      } else if (c === "disconnected" || ice === "disconnected") {
+        clearTimeout(dropTimer);
+        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 15000);
+      }
     };
+    p.onconnectionstatechange = onState;
+    p.oniceconnectionstatechange = onState;
     local.current!.getTracks().forEach((t) => p.addTrack(t, local.current!));
     pc.current = p;
     return p;
@@ -149,7 +180,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     stopRing();
     clearTimeout(timeout.current);
     setP("connecting");
-    timeout.current = window.setTimeout(() => finish(true), 20000);
+    timeout.current = window.setTimeout(() => finish(true), 45000);
   };
 
   const startCall = useCallback(async (peer: Profile, video: boolean) => {
@@ -165,7 +196,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     setI(i);
     setP("outgoing");
     setCamOff(false);
-    const p = buildPc(i);
+    const p = await buildPc(i);
     const offer = await p.createOffer();
     await p.setLocalDescription(offer);
     send(peer.id, { kind: "offer", callId: i.id, video, sdp: offer });
@@ -184,7 +215,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       alert("Camera/microphone permission is needed.");
       return decline();
     }
-    const p = buildPc(i);
+    const p = await buildPc(i);
     await p.setRemoteDescription(i.offer);
     await flushIce();
     const ans = await p.createAnswer();
@@ -209,16 +240,25 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         if (cur) return send(s.from, { kind: "busy", callId: s.callId });
         const peer = profilesRef.current.find((p) => p.id === s.from);
         if (!peer) return;
+        pendingIce.current = earlyIce.current.get(s.callId) ?? [];
+        earlyIce.current.clear();
         setI({ id: s.callId, peer, video: !!s.video, role: "callee", offer: s.sdp });
         setP("incoming");
         startRing(false);
         notify(peer.display_name, `Incoming ${s.video ? "video" : "voice"} call`);
         return;
       }
+      if (s.kind === "ice" && !cur && s.cand) {
+        const list = earlyIce.current.get(s.callId) ?? [];
+        list.push(s.cand);
+        earlyIce.current.set(s.callId, list);
+        return;
+      }
       if (!cur || cur.id !== s.callId) return;
       switch (s.kind) {
         case "answer":
-          await pc.current?.setRemoteDescription(s.sdp!);
+          if (pc.current?.signalingState !== "have-local-offer") break;
+          await pc.current.setRemoteDescription(s.sdp!);
           await flushIce();
           beginConnecting();
           break;

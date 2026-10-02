@@ -11,3 +11,4 @@
 
 - Backend is Lovable Cloud; schema via migrations; the 4 accounts are created idempotently by ensureAccounts server fn (called on failed login) since auth schema cannot be seeded in SQL.
 - Realtime: postgres_changes for messages, broadcast channels `typing:<a>:<b>` and `call:<userId>` for typing and WebRTC signalling; ICE config isolated in src/lib/ice.ts so TURN can be added.
+- TURN relay credentials come from server secrets (TURN_URLS, TURN_USERNAME, TURN_CREDENTIAL) via getTurnServers in src/lib/ice.functions.ts, merged with STUN in src/lib/ice.ts — keeps relay credentials out of the bundle.
