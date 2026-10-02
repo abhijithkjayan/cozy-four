@@ -306,9 +306,9 @@ export function ChatApp({ userId }: { userId: string }) {
               <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
             </div>
             <div className="flex items-center gap-1">
-              <button onClick={() => secureLogout()} className="flex items-center gap-1 rounded-lg px-2 py-2 text-xs font-medium text-muted-foreground hover:bg-muted" aria-label="Log out">
+              <button onClick={() => secureLogout()} className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-2 text-xs font-semibold text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
                 <LogOut className="h-4 w-4" />
-                <span className="hidden sm:inline">Log out</span>
+                <span>Log out</span>
               </button>
             <DropdownMenu>
               <DropdownMenuTrigger className="rounded-full p-2 text-muted-foreground hover:bg-muted" aria-label="Menu">
