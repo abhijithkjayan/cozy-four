@@ -162,7 +162,7 @@ export function ChatApp({ userId }: { userId: string }) {
       const active = new Set<string>();
       const inactive = new Set<string>();
       for (const [id, presences] of Object.entries(ch.presenceState())) {
-        if (presences.some((presence) => presence.status === "online")) active.add(id);
+        if (presences.some((presence) => (presence as { status?: string }).status === "online")) active.add(id);
         else inactive.add(id);
       }
       setOnline(active);
