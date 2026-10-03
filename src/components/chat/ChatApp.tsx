@@ -54,9 +54,9 @@ export function ChatApp({ userId }: { userId: string }) {
     setMe({ ...me, avatar_url: url });
     setAll((a) => a.map((p) => (p.id === me.id ? { ...p, avatar_url: url } : p)));
   };
-  const pickPhoto = async (f: File | undefined) => {
-    if (!f) return;
-    try { await setAvatar(await imageToAvatar(f)); } catch { alert("That image could not be used. Try another photo."); }
+  const [cropFile, setCropFile] = useState<File | null>(null);
+  const pickPhoto = (f: File | undefined) => {
+    if (f) setCropFile(f);
   };
 
   const togglePin = async (peerId: string) => {
@@ -304,6 +304,7 @@ export function ChatApp({ userId }: { userId: string }) {
                 <span className="block max-w-36 truncate text-xs text-muted-foreground">{me.status_text || "Set a status"}</span>
               </button>
               <input ref={photoRef} type="file" accept="image/*" hidden onChange={(e) => { pickPhoto(e.target.files?.[0]); e.target.value = ""; }} />
+              <AvatarCropper file={cropFile} onCancel={() => setCropFile(null)} onDone={(url) => { setCropFile(null); void setAvatar(url); }} />
             </div>
             <div className="flex items-center gap-1">
               <button onClick={() => secureLogout()} className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-2 text-xs font-semibold text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
