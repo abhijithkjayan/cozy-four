@@ -52,6 +52,7 @@ export function Login() {
       } else setErr("Wrong User ID or password.");
     } else {
       try {
+        sessionStorage.setItem("tab-live", "1");
         localStorage.removeItem("lk-n");
         localStorage.removeItem("lk-until");
       } catch {
