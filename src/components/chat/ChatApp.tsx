@@ -80,10 +80,10 @@ export function ChatApp({ userId }: { userId: string }) {
     setPinned((current) => new Set(current).add(peerId));
   };
 
-  const openProfile = (profile: Profile) => {
+  const openProfile = useCallback((profile: Profile) => {
     setProfileTarget(profile);
     setProfileOpen(true);
-  };
+  }, []);
 
   // Mobile: follow the visible viewport so the on-screen keyboard never covers the input
   useEffect(() => {
@@ -108,10 +108,10 @@ export function ChatApp({ userId }: { userId: string }) {
     if (!selRef.current) history.pushState({ chat: id }, "");
     setSel(id);
   };
-  const closeChat = () => {
+  const closeChat = useCallback(() => {
     if (history.state?.chat) history.back();
     else setSel(null);
-  };
+  }, []);
   useEffect(() => {
     const onPop = () => setSel(null);
     window.addEventListener("popstate", onPop);

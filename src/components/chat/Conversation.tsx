@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,10 @@ import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
+// Heavy emoji library: loaded only when someone opens "More emojis…".
+import type { EmojiStyle } from "emoji-picker-react";
+const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
 const PAGE = 30;
 const MAX_IMAGE_ZOOM = 5;
@@ -77,7 +81,8 @@ function renderLinkedText(content: string): ReactNode[] {
   return nodes;
 }
 
-export function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
+// Memoized: the parent re-renders every second for the idle-logout countdown.
+export const Conversation = memo(function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   const [hasMore, setHasMore] = useState(true);
@@ -127,6 +132,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [galleryLoading, setGalleryLoading] = useState(false);
   const [galleryTab, setGalleryTab] = useState<"media" | "audio" | "links">("media");
   const [galleryMessages, setGalleryMessages] = useState<Message[]>([]);
+  const [reactionPickerMessage, setReactionPickerMessage] = useState<string | null>(null);
   const messageElements = useRef(new Map<string, HTMLDivElement>());
   const pendingScrollId = useRef<string | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
@@ -666,14 +672,19 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   };
 
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
-  const deleteForAll = (m: Message) => supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id).then();
+  const deleteForAll = async (m: Message) => {
+    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id);
+    // Also remove the uploaded file, so a deleted photo/voice note does not stay in storage.
+    if (!error && m.media_url?.startsWith(`${me.id}/`)) void supabase.storage.from("chat-media").remove([m.media_url]);
+  };
 
   // ---- selection / clear / forward ----
   const toggleSel = (id: string) =>
     setSel((s) => {
       if (!s) return s;
       const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
       return n;
     });
   const startSel = (id: string) => setSel(new Set([id]));
@@ -689,6 +700,18 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     event.stopPropagation();
     longPressTriggered.current = false;
   };
+  const showReactionError = (action: "save" | "remove", error: { code: string; message: string }) => {
+    console.error(`Could not ${action} message reaction:`, error);
+    const missingTable =
+      error.code === "42P01" ||
+      error.code === "PGRST205" ||
+      (/message_reactions/i.test(error.message) && /(schema cache|does not exist|could not find)/i.test(error.message));
+    if (missingTable) {
+      alert("Message reactions are not enabled in the database yet. Apply drizzle/migrations/0008_message_reactions.sql in Lovable Cloud, then try again.");
+      return;
+    }
+    alert(`Could not ${action} your reaction: ${error.message}`);
+  };
   const toggleReaction = async (message: Message, emoji: string) => {
     const existing = reactions.find((reaction) => reaction.message_id === message.id && reaction.user_id === me.id);
     if (existing?.emoji === emoji) {
@@ -698,8 +721,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
         .eq("message_id", message.id)
         .eq("user_id", me.id);
       if (error) {
-        console.error("Could not remove message reaction:", error);
-        alert("Could not remove your reaction. Please try again.");
+        showReactionError("remove", error);
         return;
       }
       setReactions((current) => current.filter((reaction) => !(reaction.message_id === message.id && reaction.user_id === me.id)));
@@ -711,8 +733,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       .select()
       .single();
     if (error) {
-      console.error("Could not save message reaction:", error);
-      alert("Could not save your reaction. Please try again.");
+      showReactionError("save", error);
       return;
     }
     setReactions((current) => [
@@ -832,8 +853,57 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     setSel(null);
   };
 
-  const byId = new Map(msgs.map((m) => [m.id, m]));
-  const shown = msgs.filter(visible);
+  const byId = useMemo(() => new Map(msgs.map((m) => [m.id, m])), [msgs]);
+  const rows = useMemo(() => {
+    const out: { m: Message; day: string | null }[] = [];
+    let prevDay = "";
+    for (const m of msgs) {
+      if (!visible(m) || (m.type === "call" && m.deleted_for_everyone)) continue;
+      const day = dayLabel(m.created_at);
+      out.push({ m, day: day !== prevDay ? day : null });
+      prevDay = day;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `visible` only depends on me.id
+  }, [msgs, me.id]);
+  const reactionsByMessage = useMemo(() => {
+    const map = new Map<string, MessageReaction[]>();
+    for (const reaction of reactions) {
+      const list = map.get(reaction.message_id);
+      if (list) list.push(reaction);
+      else map.set(reaction.message_id, [reaction]);
+    }
+    return map;
+  }, [reactions]);
+  const actions = useStableActions<RowActions>({
+    register: (id, element) => {
+      if (element) messageElements.current.set(id, element);
+      else messageElements.current.delete(id);
+    },
+    toggleSel,
+    startSel,
+    reply: (m) => { setEditing(null); setText(""); setReply(m); },
+    edit: (m) => { setReply(null); setEditing(m); setText(m.content ?? ""); },
+    react: (m, emoji) => void toggleReaction(m, emoji),
+    setMenu: (id) => setOpenMessageMenu(id),
+    setPicker: (id) => setReactionPickerMessage(id),
+    openViewOnce: (m) => void openViewOnceImage(m),
+    viewImage: (m) => void viewImage(m),
+    share: (m, url, title) => void shareAttachment(m, url, title),
+    download: (m, url, title) => void downloadAttachment(m, url, title),
+    deleteForMe: (m) => void deleteForMe(m),
+    deleteForAll: (m) => void deleteForAll(m),
+    openViewer: (url) => setViewer(url),
+    audioPlayed: markAudioPlayed,
+    pressStart: (id) => {
+      pressTimer.current = window.setTimeout(() => {
+        longPressTriggered.current = true;
+        setOpenMessageMenu(id);
+      }, 500);
+    },
+    cancelPress,
+    consumeLongPressClick,
+  });
   const status = typing ? "typing…" : online ? "online" : lastSeen(peer.last_seen);
 
   return (
@@ -872,146 +942,24 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
 
       <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-[8%]">
         {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
-        {shown.map((m, i) => {
-          const newDay = i === 0 || dayLabel(shown[i - 1]!.created_at) !== dayLabel(m.created_at);
-          const mine = m.sender_id === me.id;
-          const rep = m.reply_to ? byId.get(m.reply_to) : undefined;
-          const attachment = parseAttachment(m.content);
-          if (m.type === "call" && m.deleted_for_everyone) return null;
-          return (
-            <Fragment key={m.id}>
-              {newDay && (
-                <div className="my-3 flex justify-center">
-                  <span className="rounded-lg bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm">{dayLabel(m.created_at)}</span>
-                </div>
-              )}
-              {m.type === "call" ? (
-                <div ref={(element) => { if (element) messageElements.current.set(m.id, element); else messageElements.current.delete(m.id); }} className={cn("group my-2 flex items-center justify-center gap-2", sel?.has(m.id) && "bg-primary/10")} onClick={sel ? () => toggleSel(m.id) : undefined}>
-                  {sel && <Tick on={sel.has(m.id)} />}
-                  <span className={cn("flex items-center gap-2 rounded-lg bg-card px-3 py-1.5 text-xs shadow-sm", m.content?.startsWith("Missed") && "text-destructive")}>
-                    {m.content?.startsWith("Missed") ? <PhoneMissed className="h-3.5 w-3.5" /> : m.content?.startsWith("Video") ? <Video className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
-                    {m.content} · {fmtTime(m.created_at)}
-                  </span>
-                  {!sel && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger onClick={(event) => event.stopPropagation()} className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-muted group-hover:opacity-100 focus:opacity-100 max-md:opacity-60" aria-label="Call entry options">
-                        <ChevronDown className="h-4 w-4" />
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="center">
-                        <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                </div>
-              ) : (
-                <div
-                  ref={(element) => { if (element) messageElements.current.set(m.id, element); else messageElements.current.delete(m.id); }}
-                  className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", sel?.has(m.id) && "bg-primary/10", sel && "cursor-pointer")}
-                  onClick={sel ? () => toggleSel(m.id) : undefined}
-                  onClickCapture={consumeLongPressClick}
-                  onPointerDown={!sel && !m.deleted_for_everyone ? () => {
-                    pressTimer.current = window.setTimeout(() => {
-                      longPressTriggered.current = true;
-                      setOpenMessageMenu(m.id);
-                    }, 500);
-                  } : undefined}
-                  onPointerUp={cancelPress}
-                  onPointerLeave={cancelPress}
-                  onPointerCancel={cancelPress}
-                  onPointerMove={cancelPress}
-                >
-                  {sel && <div className={cn(mine && "order-last")}><Tick on={sel.has(m.id)} /></div>}
-                  <div className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in")}>
-                    {!m.deleted_for_everyone && (
-                      <DropdownMenu open={openMessageMenu === m.id} onOpenChange={(open) => setOpenMessageMenu(open ? m.id : null)}>
-                        <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
-                          <ChevronDown className="h-4 w-4" />
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => setOpenMessageMenu(null)}>
-                          <div role="group" aria-label="React to message" className="flex items-center justify-between gap-1 border-b px-1 pb-1">
-                            {QUICK_REACTIONS.map((emoji) => (
-                              <DropdownMenuItem
-                                key={emoji}
-                                onSelect={() => void toggleReaction(m, emoji)}
-                                className="h-9 w-9 justify-center p-0 text-xl"
-                                aria-label={`React ${emoji}`}
-                              >
-                                {emoji}
-                              </DropdownMenuItem>
-                            ))}
-                          </div>
-                          <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
-                          {mine && m.type === "text" && <DropdownMenuItem onClick={() => { setReply(null); setEditing(m); setText(m.content ?? ""); }}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
-                          {m.type === "image" && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => void openViewOnceImage(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once photo</DropdownMenuItem>}
-                          {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
-                          {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void shareAttachment(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
-                          {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void downloadAttachment(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
-                          <DropdownMenuItem onClick={() => startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
-                          {mine && <DropdownMenuItem onClick={() => deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    )}
-                    {rep && !m.deleted_for_everyone && (
-                      <div className="mb-1 rounded-md border-l-4 border-primary bg-foreground/5 px-2 py-1 text-xs">
-                        <div className="font-medium text-primary">{rep.sender_id === me.id ? "You" : peer.display_name}</div>
-                        <div className="truncate text-muted-foreground">{preview(rep, "")}</div>
-                      </div>
-                    )}
-                    {m.deleted_for_everyone ? (
-                      <p className="px-1 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
-                    ) : m.type === "image" && m.media_url && m.view_once && !mine && m.view_once_opened_at ? (
-                      <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This photo was opened</p>
-                    ) : m.type === "image" && m.media_url && m.view_once && !mine ? (
-                      <button type="button" onClick={() => void openViewOnceImage(m)} className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
-                        <Clock3 className="h-5 w-5 shrink-0 text-primary" />
-                        <span className="text-left"><strong className="block">View once photo</strong><span className="text-xs text-muted-foreground">Open this photo one time</span></span>
-                      </button>
-                    ) : m.type === "image" && m.media_url ? (
-                      <ImageThumb path={m.media_url} onOpen={setViewer} />
-                    ) : m.type === "audio" && m.media_url ? (
-                      <AudioPlayer path={m.media_url} duration={Number(m.content) || 0} played={playedAudio.has(m.id)} onPlayed={() => markAudioPlayed(m.id)} />
-                    ) : m.type === "location" && attachment?.mapsUrl ? (
-                      <a href={attachment.mapsUrl} target="_blank" rel="noreferrer" className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
-                        <MapPin className="h-5 w-5 shrink-0 text-primary" />
-                        <span><strong className="block">Current location</strong><span className="text-xs text-muted-foreground">Open in Google Maps</span></span>
-                      </a>
-                    ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
-                      <button onClick={() => setViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
-                        <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
-                      </button>
-                    ) : (
-                      <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
-                    )}
-                    <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
-                      <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
-                      {mine && !m.deleted_for_everyone && (m.status === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", m.status === "read" && "text-tick-read")} />)}
-                    </div>
-                    {!m.deleted_for_everyone && reactions.some((reaction) => reaction.message_id === m.id) && (
-                      <div className="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
-                        {[...new Set(reactions.filter((reaction) => reaction.message_id === m.id).map((reaction) => reaction.emoji))].map((emoji) => {
-                          const emojiReactions = reactions.filter((reaction) => reaction.message_id === m.id && reaction.emoji === emoji);
-                          const reactedByMe = emojiReactions.some((reaction) => reaction.user_id === me.id);
-                          return (
-                            <button
-                              key={emoji}
-                              type="button"
-                              onClick={() => void toggleReaction(m, emoji)}
-                              className={cn("rounded-full border px-1.5 py-0.5 text-xs", reactedByMe ? "border-primary/50 bg-primary/10" : "border-border bg-background/60")}
-                              aria-label={`${emoji}, ${emojiReactions.length} ${emojiReactions.length === 1 ? "reaction" : "reactions"}${reactedByMe ? ", reacted by you" : ""}`}
-                            >
-                              {emoji} {emojiReactions.length}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </Fragment>
-          );
-        })}
+        {rows.map(({ m, day }) => (
+          <MessageRow
+            key={m.id}
+            m={m}
+            day={day}
+            mine={m.sender_id === me.id}
+            rep={m.reply_to ? byId.get(m.reply_to) : undefined}
+            selecting={!!sel}
+            selected={!!sel?.has(m.id)}
+            reactions={reactionsByMessage.get(m.id)}
+            played={playedAudio.has(m.id)}
+            menuOpen={openMessageMenu === m.id}
+            pickerOpen={reactionPickerMessage === m.id}
+            meId={me.id}
+            peerName={peer.display_name}
+            actions={actions}
+          />
+        ))}
         {typing && (
           <div className="my-1 flex">
             <div className="flex gap-1 rounded-xl rounded-tl-sm bg-bubble-in px-3 py-3 shadow-sm">
@@ -1292,7 +1240,224 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
     </div>
   );
+});
+
+type RowActions = {
+  register: (id: string, element: HTMLDivElement | null) => void;
+  toggleSel: (id: string) => void;
+  startSel: (id: string) => void;
+  reply: (m: Message) => void;
+  edit: (m: Message) => void;
+  react: (m: Message, emoji: string) => void;
+  setMenu: (id: string | null) => void;
+  setPicker: (id: string | null) => void;
+  openViewOnce: (m: Message) => void;
+  viewImage: (m: Message) => void;
+  share: (m: Message, url?: string, title?: string) => void;
+  download: (m: Message, url?: string, title?: string) => void;
+  deleteForMe: (m: Message) => void;
+  deleteForAll: (m: Message) => void;
+  openViewer: (url: string) => void;
+  audioPlayed: (id: string) => void;
+  pressStart: (id: string) => void;
+  cancelPress: () => void;
+  consumeLongPressClick: (event: React.MouseEvent) => void;
+};
+
+/** Returns an object whose functions keep the same identity but always call the latest implementation. */
+function useStableActions<T extends object>(impl: T): T {
+  const latest = useRef(impl);
+  latest.current = impl;
+  const [stable] = useState(
+    () =>
+      Object.fromEntries(
+        Object.keys(impl).map((key) => [key, (...args: unknown[]) => (latest.current[key as keyof T] as (...a: unknown[]) => unknown)(...args)]),
+      ) as T,
+  );
+  return stable;
 }
+
+type RowProps = {
+  m: Message;
+  day: string | null;
+  mine: boolean;
+  rep: Message | undefined;
+  selecting: boolean;
+  selected: boolean;
+  reactions: MessageReaction[] | undefined;
+  played: boolean;
+  menuOpen: boolean;
+  pickerOpen: boolean;
+  meId: string;
+  peerName: string;
+  actions: RowActions;
+};
+
+// Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
+const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, meId, peerName, actions }: RowProps) {
+  const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
+  const reactionGroups = useMemo(() => {
+    const groups = new Map<string, { emoji: string; count: number; byMe: boolean }>();
+    for (const reaction of reactions ?? []) {
+      const group = groups.get(reaction.emoji) ?? { emoji: reaction.emoji, count: 0, byMe: false };
+      group.count += 1;
+      group.byMe ||= reaction.user_id === meId;
+      groups.set(reaction.emoji, group);
+    }
+    return [...groups.values()];
+  }, [reactions, meId]);
+  return (
+    <>
+      {day && (
+        <div className="my-3 flex justify-center">
+          <span className="rounded-lg bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm">{day}</span>
+        </div>
+      )}
+      {m.type === "call" ? (
+        <div ref={(element) => actions.register(m.id, element)} className={cn("group my-2 flex items-center justify-center gap-2", selected && "bg-primary/10")} onClick={selecting ? () => actions.toggleSel(m.id) : undefined}>
+          {selecting && <Tick on={selected} />}
+          <span className={cn("flex items-center gap-2 rounded-lg bg-card px-3 py-1.5 text-xs shadow-sm", m.content?.startsWith("Missed") && "text-destructive")}>
+            {m.content?.startsWith("Missed") ? <PhoneMissed className="h-3.5 w-3.5" /> : m.content?.startsWith("Video") ? <Video className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
+            {m.content} · {fmtTime(m.created_at)}
+          </span>
+          {!selecting && (
+            <DropdownMenu>
+              <DropdownMenuTrigger onClick={(event) => event.stopPropagation()} className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-muted group-hover:opacity-100 focus:opacity-100 max-md:opacity-60" aria-label="Call entry options">
+                <ChevronDown className="h-4 w-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="center">
+                <DropdownMenuItem onClick={() => actions.reply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        </div>
+      ) : (
+        <Popover open={pickerOpen} onOpenChange={(open) => actions.setPicker(open ? m.id : null)}>
+          <PopoverAnchor asChild>
+            <div
+              ref={(element) => actions.register(m.id, element)}
+              className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", selecting && "cursor-pointer")}
+              onClick={selecting ? () => actions.toggleSel(m.id) : undefined}
+              onClickCapture={actions.consumeLongPressClick}
+              onPointerDown={!selecting && !m.deleted_for_everyone ? () => actions.pressStart(m.id) : undefined}
+              onPointerUp={actions.cancelPress}
+              onPointerLeave={actions.cancelPress}
+              onPointerCancel={actions.cancelPress}
+              onPointerMove={actions.cancelPress}
+            >
+          {selecting && <div className={cn(mine && "order-last")}><Tick on={selected} /></div>}
+          <div className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in")}>
+            {!m.deleted_for_everyone && (
+              <DropdownMenu open={menuOpen} onOpenChange={(open) => actions.setMenu(open ? m.id : null)}>
+                <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
+                  <ChevronDown className="h-4 w-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => actions.setMenu(null)}>
+                  <div role="group" aria-label="React to message" className="flex items-center justify-between gap-1 border-b px-1 pb-1">
+                    {QUICK_REACTIONS.map((emoji) => (
+                      <DropdownMenuItem
+                        key={emoji}
+                        onSelect={() => actions.react(m, emoji)}
+                        className="h-9 w-9 justify-center p-0 text-xl"
+                        aria-label={`React ${emoji}`}
+                      >
+                        {emoji}
+                      </DropdownMenuItem>
+                    ))}
+                  </div>
+                  <DropdownMenuItem onSelect={() => actions.setPicker(m.id)}>
+                    <Smile className="mr-1 h-4 w-4" />More emojis…
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => actions.reply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                  {mine && m.type === "text" && <DropdownMenuItem onClick={() => actions.edit(m)}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
+                  {m.type === "image" && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => actions.openViewOnce(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once photo</DropdownMenuItem>}
+                  {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                  <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => actions.deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
+                  {mine && <DropdownMenuItem onClick={() => actions.deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
+            {rep && !m.deleted_for_everyone && (
+              <div className="mb-1 rounded-md border-l-4 border-primary bg-foreground/5 px-2 py-1 text-xs">
+                <div className="font-medium text-primary">{rep.sender_id === meId ? "You" : peerName}</div>
+                <div className="truncate text-muted-foreground">{preview(rep, "")}</div>
+              </div>
+            )}
+            {m.deleted_for_everyone ? (
+              <p className="px-1 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
+            ) : m.type === "image" && m.media_url && m.view_once && !mine && m.view_once_opened_at ? (
+              <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This photo was opened</p>
+            ) : m.type === "image" && m.media_url && m.view_once && !mine ? (
+              <button type="button" onClick={() => actions.openViewOnce(m)} className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
+                <Clock3 className="h-5 w-5 shrink-0 text-primary" />
+                <span className="text-left"><strong className="block">View once photo</strong><span className="text-xs text-muted-foreground">Open this photo one time</span></span>
+              </button>
+            ) : m.type === "image" && m.media_url ? (
+              <ImageThumb path={m.media_url} onOpen={actions.openViewer} />
+            ) : m.type === "audio" && m.media_url ? (
+              <AudioPlayer path={m.media_url} duration={Number(m.content) || 0} played={played} onPlayed={() => actions.audioPlayed(m.id)} />
+            ) : m.type === "location" && attachment?.mapsUrl ? (
+              <a href={attachment.mapsUrl} target="_blank" rel="noreferrer" className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
+                <MapPin className="h-5 w-5 shrink-0 text-primary" />
+                <span><strong className="block">Current location</strong><span className="text-xs text-muted-foreground">Open in Google Maps</span></span>
+              </a>
+            ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
+              <button onClick={() => actions.openViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
+                <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
+              </button>
+            ) : (
+              <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
+            )}
+            <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
+              <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
+              {mine && !m.deleted_for_everyone && (m.status === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", m.status === "read" && "text-tick-read")} />)}
+            </div>
+            {!m.deleted_for_everyone && reactionGroups.length > 0 && (
+              <div className="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
+                {reactionGroups.map(({ emoji, count, byMe }) => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => actions.react(m, emoji)}
+                    className={cn("rounded-full border px-1.5 py-0.5 text-xs", byMe ? "border-primary/50 bg-primary/10" : "border-border bg-background/60")}
+                    aria-label={`${emoji}, ${count} ${count === 1 ? "reaction" : "reactions"}${byMe ? ", reacted by you" : ""}`}
+                  >
+                    {emoji} {count}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+            </div>
+          </PopoverAnchor>
+          <PopoverContent
+            side="top"
+            align={mine ? "end" : "start"}
+            sideOffset={8}
+            className="w-auto overflow-hidden p-0"
+            onOpenAutoFocus={(event) => event.preventDefault()}
+          >
+            <Suspense fallback={<div className="flex h-[400px] w-[min(360px,calc(100vw-2rem))] items-center justify-center text-sm text-muted-foreground">Loading…</div>}>
+            <EmojiPicker
+              onEmojiClick={(emoji) => {
+                actions.setPicker(null);
+                actions.react(m, emoji.emoji);
+              }}
+              emojiStyle={"native" as EmojiStyle}
+              width="min(360px, calc(100vw - 2rem))"
+              height={400}
+              previewConfig={{ showPreview: false }}
+            />
+            </Suspense>
+          </PopoverContent>
+        </Popover>
+      )}
+    </>
+  );
+});
 
 function parseAttachment(content: string | null): { url?: string; title?: string; mapsUrl?: string } | null {
   if (!content) return null;

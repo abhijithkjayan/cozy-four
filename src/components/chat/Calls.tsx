@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Mic, MicOff, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
@@ -337,9 +337,12 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   };
 
   const showVideo = info?.video && phase !== "incoming";
+  // Stable value so chat screens don't re-render on every call-timer tick.
+  const busy = phase !== "idle";
+  const ctxValue = useMemo(() => ({ startCall, busy }), [startCall, busy]);
 
   return (
-    <Ctx.Provider value={{ startCall, busy: phase !== "idle" }}>
+    <Ctx.Provider value={ctxValue}>
       {children}
       {info && phase !== "idle" && (
         <div className="fixed inset-0 z-50 flex flex-col bg-call-bg text-call-fg">
