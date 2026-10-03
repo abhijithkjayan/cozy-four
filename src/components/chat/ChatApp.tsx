@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Bell, Camera, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
 import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
-import { messageTone, notify } from "@/lib/tones";
+import { notify } from "@/lib/tones";
 import { cn } from "@/lib/utils";
 import { secureLogout, useIdleLogout } from "@/lib/security";
 import { AvatarCropper } from "./AvatarCropper";
@@ -237,7 +237,6 @@ export function ChatApp({ userId }: { userId: string }) {
         const visible = selRef.current === peer && document.visibilityState === "visible";
         if (!visible && m.type !== "call") {
           setUnread((u) => ({ ...u, [peer]: (u[peer] ?? 0) + 1 }));
-          messageTone();
           const who = all.find((p) => p.id === peer)?.display_name ?? "New message";
           notify(who, preview(m, me.id));
         }
@@ -262,10 +261,40 @@ export function ChatApp({ userId }: { userId: string }) {
 
   const clearUnread = useCallback((id: string) => setUnread((u) => ({ ...u, [id]: 0 })), []);
 
-  const askNotify = () => {
+  const askNotify = async () => {
+    if (typeof Notification === "undefined") {
+      alert("This browser does not support notifications.");
+      return;
+    }
+    if (Notification.permission === "granted") {
+      alert("Browser notifications are already enabled.");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      alert(
+        "Notifications are blocked by your browser. Allow them in the browser's site settings.",
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        "Enable browser notifications for incoming messages and calls? Notifications will be delivered by this browser only.",
+      )
+    )
+      return;
+
     try {
-      if (typeof Notification !== "undefined" && Notification.permission === "default") Notification.requestPermission();
-    } catch {}
+      const permission = await Notification.requestPermission();
+      if (permission === "granted") alert("Browser notifications are enabled.");
+      else if (permission === "denied")
+        alert(
+          "Browser notifications were blocked. You can change this in your browser's site settings.",
+        );
+      else alert("Browser notifications were not enabled.");
+    } catch (error) {
+      console.error("Could not request browser notification permission:", error);
+      alert("Could not enable browser notifications. Please try again.");
+    }
   };
 
   if (missing)
@@ -285,16 +314,16 @@ export function ChatApp({ userId }: { userId: string }) {
 
   return (
     <CallProvider me={me} profiles={all}>
-      <div className="app-shell flex flex-col overflow-hidden bg-background" onClick={askNotify}>
+      <div className="app-shell flex flex-col overflow-hidden bg-background">
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
             <button type="button" onClick={tapCountdown} className="cursor-pointer select-none rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums hover:bg-primary-foreground/25 sm:px-2 sm:text-xs" aria-label={idleLogoutDisabled ? "Automatic logout is disabled. Click to turn it back on." : `Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}. Click five times to disable it for this session.`} title={idleLogoutDisabled ? "Click to enable automatic logout for this session" : "Click five times to disable automatic logout for this session"}>
               {idleLogoutDisabled ? "OFF" : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`}
             </button>
-            <button onClick={() => secureLogout()} className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground shadow-sm hover:opacity-90 sm:w-auto sm:gap-1.5 sm:px-3" aria-label="Log out">
+            <button onClick={() => secureLogout()} className="flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-destructive px-3 text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
               <LogOut className="h-4 w-4" />
-              <span className="hidden text-xs font-semibold sm:inline">Log out</span>
+              <span className="text-xs font-semibold">Log out</span>
             </button>
           </div>
         </div>
