@@ -68,12 +68,19 @@ export const telegramAlert = createServerFn({ method: "POST" })
     }
 
     // Both message and reaction alerts: the event must involve the watched account and be fresh.
-    const { data: message } = await supabaseAdmin
+    // Only core columns are selected here so the alert still works before migration 0007
+    // (which adds view_once) has been applied.
+    const { data: message, error: messageError } = await supabaseAdmin
       .from("messages")
-      .select("id, type, content, sender_id, receiver_id, created_at, view_once")
+      .select("id, type, content, sender_id, receiver_id, created_at")
       .eq("id", data.messageId)
       .maybeSingle();
+    if (messageError) console.error("Telegram alert: could not read message:", messageError);
     if (!message) return { sent: false };
+    // view_once is optional: look it up separately and ignore the error if the column is missing.
+    let viewOnce = false;
+    const { data: vo } = await supabaseAdmin.from("messages").select("view_once").eq("id", data.messageId).maybeSingle();
+    if (vo && "view_once" in vo) viewOnce = !!vo.view_once;
     const { data: watched } = await supabaseAdmin.from("profiles").select("id").eq("user_id", WATCHED_USER_ID).maybeSingle();
     if (!watched || callerId === watched.id) return { sent: false };
 
@@ -84,7 +91,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
         const label = message.content?.startsWith("Missed") ? "📵 Missed call from" : "📞 Call from";
         return { sent: await sendTelegram(`${label} ${name}`) };
       }
-      const label = message.type === "image" && message.view_once ? "⏱️ View-once photo received from" : MESSAGE_LABELS[message.type] ?? "💬 Message received from";
+      const label = message.type === "image" && viewOnce ? "⏱️ View-once photo received from" : MESSAGE_LABELS[message.type] ?? "💬 Message received from";
       return { sent: await sendTelegram(`${label} ${name}`) };
     }
 
