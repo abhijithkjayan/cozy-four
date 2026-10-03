@@ -39,5 +39,5 @@ export function stopRing() {
 export function notify(title: string, body: string) {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   if (document.visibilityState === "visible" && document.hasFocus()) return;
-  try { new Notification(title, { body, icon: "/icon.svg" }); } catch {}
+  try { new Notification(title, { body, icon: "/icon-192.png" }); } catch {}
 }
