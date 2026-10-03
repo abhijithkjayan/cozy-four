@@ -18,7 +18,7 @@ export function useGlobalLogout() {
     const channel = supabase
       .channel(GLOBAL_LOGOUT_TOPIC)
       .on("broadcast", { event: "logout" }, ({ payload }: { payload: { action?: string } }) => {
-        if (payload?.action === "manual") void secureLogout();
+        if (payload?.action === "manual" && !readIdleLogoutDisabled()) void secureLogout();
       });
     globalLogoutChannel = channel;
     channel.subscribe((status) => {
