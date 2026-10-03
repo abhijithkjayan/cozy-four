@@ -1010,6 +1010,11 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         <textarea
           value={text}
           onChange={(e) => onType(e.target.value)}
+          onPaste={(e) => {
+            // Let pasted text fall through; grab any images (e.g. a screenshot) into the photo-send flow.
+            const files = Array.from(e.clipboardData.files).filter((file) => file.type.startsWith("image/"));
+            if (files.length) { e.preventDefault(); chooseImages(files); }
+          }}
           onKeyDown={(e) => {
             // On phones Enter adds a new line (like WhatsApp); on desktop Enter sends
             const touch = window.matchMedia("(pointer: coarse)").matches;
