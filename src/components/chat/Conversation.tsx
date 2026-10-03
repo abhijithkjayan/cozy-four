@@ -135,6 +135,14 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [galleryTab, setGalleryTab] = useState<"media" | "audio" | "links">("media");
   const [galleryMessages, setGalleryMessages] = useState<Message[]>([]);
   const [reactionPickerMessage, setReactionPickerMessage] = useState<string | null>(null);
+  const [nudgeCooldown, setNudgeCooldown] = useState(false);
+  const canNudge = peer.user_id === WATCHED_USER_ID;
+  const sendNudge = () => {
+    if (nudgeCooldown) return;
+    setNudgeCooldown(true);
+    sendTelegramAlert({ kind: "nudge" });
+    window.setTimeout(() => setNudgeCooldown(false), 10_000);
+  };
   const messageElements = useRef(new Map<string, HTMLDivElement>());
   const pendingScrollId = useRef<string | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
@@ -933,6 +941,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             <span className={cn("block line-clamp-1 text-xs leading-4", typing ? "text-primary" : "text-muted-foreground")}>{status}</span>
           </span>
         </button>
+        {canNudge && <button type="button" disabled={nudgeCooldown} onClick={sendNudge} className="flex h-11 w-11 items-center justify-center rounded-full text-lg active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label={nudgeCooldown ? "Nudge sent" : `Nudge ${peer.display_name}`} title={nudgeCooldown ? "Nudge sent" : "Send a nudge"}>🚨</button>}
         <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
         <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
         <button onClick={() => void openGallery()} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Shared media gallery" title="Shared media, audio and links"><Images className="h-5 w-5" /></button>

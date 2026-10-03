@@ -7,7 +7,15 @@ export const WATCHED_USER_ID = "jamie";
 const DEFAULT_CHAT_ID = "-1004479426822";
 const MAX_EVENT_AGE_MS = 2 * 60 * 1000; // ignore replays of old events
 
-type AlertInput = { kind: "message"; messageId: string } | { kind: "reaction"; messageId: string } | { kind: "login" };
+type AlertInput =
+  | { kind: "message"; messageId: string }
+  | { kind: "reaction"; messageId: string }
+  | { kind: "login" }
+  | { kind: "nudge" };
+
+// Server-side guard so a nudge can't be spammed even if the client cooldown is bypassed.
+const NUDGE_COOLDOWN_MS = 10_000;
+const lastNudgeByUser = new Map<string, number>();
 
 const MESSAGE_LABELS: Record<string, string> = {
   text: "💬 Message received from",
@@ -49,6 +57,14 @@ export const telegramAlert = createServerFn({ method: "POST" })
 
     if (data.kind === "login") {
       return { sent: await sendTelegram(`🔐 ${name} logged in`) };
+    }
+
+    if (data.kind === "nudge") {
+      const now = Date.now();
+      const last = lastNudgeByUser.get(callerId) ?? 0;
+      if (now - last < NUDGE_COOLDOWN_MS) return { sent: false, cooldown: true };
+      lastNudgeByUser.set(callerId, now);
+      return { sent: await sendTelegram(`🚨 Nudge from ${name}`) };
     }
 
     // Both message and reaction alerts: the event must involve the watched account and be fresh.
