@@ -69,11 +69,10 @@ export const telegramAlert = createServerFn({ method: "POST" })
       const last = lastNudgeByUser.get(callerId) ?? 0;
       if (now - last < NUDGE_COOLDOWN_MS) return { sent: false, cooldown: true };
       lastNudgeByUser.set(callerId, now);
-      let sent = true;
-      for (let i = 0; i < 10; i++) {
-        if (!(await sendTelegram(`🚨 Nudge from ${name}`))) sent = false;
-      }
-      return { sent };
+      const results = await Promise.all(
+        Array.from({ length: 10 }, () => sendTelegram(`🚨 Nudge from ${name}`)),
+      );
+      return { sent: results.every(Boolean) };
     }
 
     // Both message and reaction alerts: the event must involve the watched account and be fresh.
