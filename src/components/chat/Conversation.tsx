@@ -194,7 +194,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     keepBottom.current = true;
     const { data, error } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: peer.id, reply_to: reply?.id ?? null, ...row }).select().single();
     if (error) {
-      alert("Message failed to send.");
+      const errorText = `${error.message} ${error.details ?? ""}`.toLowerCase();
+      if (row.view_once && errorText.includes("view_once") && /column|schema cache|field/.test(errorText)) {
+        alert("View-once photos are not enabled in the database yet. Apply drizzle/migrations/0007_view_once_media.sql in Lovable Cloud, then try again.");
+      } else {
+        console.error("Message failed to send:", error);
+        alert(`Message failed to send: ${error.message}`);
+      }
       return false;
     }
     setReply(null);

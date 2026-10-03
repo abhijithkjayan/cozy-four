@@ -40,7 +40,7 @@ export function ChatApp({ userId }: { userId: string }) {
   const [listView, setListView] = useState<"chats" | "calls">("chats");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileTarget, setProfileTarget] = useState<Profile | null>(null);
-  const { left } = useIdleLogout();
+  const { left, disabled: idleLogoutDisabled, tapCountdown } = useIdleLogout();
   const photoRef = useRef<HTMLInputElement>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const selRef = useRef<string | null>(null);
@@ -289,7 +289,9 @@ export function ChatApp({ userId }: { userId: string }) {
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
-            <span className="rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums sm:px-2 sm:text-xs" aria-label={`Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`} title="Automatic logout countdown">{Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>
+            <button type="button" onClick={tapCountdown} className="rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums hover:bg-primary-foreground/25 sm:px-2 sm:text-xs" aria-label={idleLogoutDisabled ? "Automatic logout disabled for this session" : `Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}. Tap five times to disable it for this session.`} title={idleLogoutDisabled ? "Automatic logout disabled for this session" : "Tap five times to disable automatic logout for this session"}>
+              {idleLogoutDisabled ? "OFF" : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`}
+            </button>
             <button onClick={() => secureLogout()} className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground shadow-sm hover:opacity-90 sm:w-auto sm:gap-1.5 sm:px-3" aria-label="Log out">
               <LogOut className="h-4 w-4" />
               <span className="hidden text-xs font-semibold sm:inline">Log out</span>

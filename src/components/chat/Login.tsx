@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import lionLogo from "@/assets/ontario-logo.jpg.asset.json";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
+import { IDLE_LOGOUT_DISABLED_KEY } from "@/lib/security";
 import { ensureAccounts } from "@/lib/accounts.functions";
 
 export function Login() {
@@ -53,6 +54,8 @@ export function Login() {
     } else {
       try {
         sessionStorage.setItem("tab-live", "1");
+        sessionStorage.removeItem(IDLE_LOGOUT_DISABLED_KEY);
+        sessionStorage.removeItem("idle-logout-taps");
         localStorage.removeItem("lk-n");
         localStorage.removeItem("lk-until");
       } catch {

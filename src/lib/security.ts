@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { supabase, wipeLocalCaches } from "@/lib/supabase";
 
 export const IDLE_LIMIT_MS = 60 * 1000; // auto logout after 1 minute of no activity
+export const IDLE_LOGOUT_DISABLED_KEY = "idle-logout-disabled";
+const IDLE_LOGOUT_TAPS_KEY = "idle-logout-taps";
+const IDLE_LOGOUT_TAPS_TO_DISABLE = 5;
 
 // Set paused=true while a call is running so a long call is not cut off.
 export const idleState = { paused: false };
@@ -16,7 +19,10 @@ export async function secureLogout() {
 /** Logs the user out after 1 min without touching the app. Returns the seconds remaining. */
 export function useIdleLogout() {
   const last = useRef(Date.now());
+  const disabledRef = useRef(readIdleLogoutDisabled());
+  const tapCount = useRef(readIdleLogoutTaps());
   const [left, setLeft] = useState(Math.ceil(IDLE_LIMIT_MS / 1000));
+  const [disabled, setDisabled] = useState(disabledRef.current);
 
   useEffect(() => {
     const mark = () => {
@@ -31,6 +37,7 @@ export function useIdleLogout() {
     window.addEventListener("scroll", throttled, { passive: true, capture: true });
 
     const check = () => {
+      if (disabledRef.current) return;
       if (idleState.paused) { mark(); return; }
       const idle = Date.now() - last.current;
       if (idle >= IDLE_LIMIT_MS) { secureLogout(); return; }
@@ -43,17 +50,17 @@ export function useIdleLogout() {
     let hideTimer: number | undefined;
     const onVis = () => {
       if (document.visibilityState === "hidden") {
-        if (idleState.paused) return;
+        if (disabledRef.current || idleState.paused) return;
         hiddenAt = Date.now();
-        hideTimer = window.setTimeout(() => { if (document.visibilityState === "hidden" && !idleState.paused) secureLogout(); }, 3000);
+        hideTimer = window.setTimeout(() => { if (document.visibilityState === "hidden" && !idleState.paused && !disabledRef.current) secureLogout(); }, 3000);
       } else {
         clearTimeout(hideTimer);
-        if (hiddenAt && Date.now() - hiddenAt > 3000 && !idleState.paused) { secureLogout(); return; }
+        if (hiddenAt && Date.now() - hiddenAt > 3000 && !idleState.paused && !disabledRef.current) { secureLogout(); return; }
         hiddenAt = 0;
         check();
       }
     };
-    const onHide = () => { if (!idleState.paused) secureLogout(); };
+    const onHide = () => { if (!idleState.paused && !disabledRef.current) secureLogout(); };
     window.addEventListener("pagehide", onHide);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onVis);
@@ -69,7 +76,42 @@ export function useIdleLogout() {
     };
   }, []);
 
-  return { left, stay: () => { last.current = Date.now(); setLeft(Math.ceil(IDLE_LIMIT_MS / 1000)); } };
+  const tapCountdown = () => {
+    if (disabledRef.current) return;
+    tapCount.current += 1;
+    try {
+      sessionStorage.setItem(IDLE_LOGOUT_TAPS_KEY, String(tapCount.current));
+    } catch {
+      // Keep the tap count for this mounted session if sessionStorage is unavailable.
+    }
+    if (tapCount.current < IDLE_LOGOUT_TAPS_TO_DISABLE) return;
+    disabledRef.current = true;
+    setDisabled(true);
+    try {
+      sessionStorage.setItem(IDLE_LOGOUT_DISABLED_KEY, "1");
+    } catch {
+      // Keep the disabled state for this mounted session if sessionStorage is unavailable.
+    }
+  };
+
+  return { left, disabled, tapCountdown };
+}
+
+function readIdleLogoutDisabled() {
+  try {
+    return sessionStorage.getItem(IDLE_LOGOUT_DISABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function readIdleLogoutTaps() {
+  try {
+    const taps = Number(sessionStorage.getItem(IDLE_LOGOUT_TAPS_KEY) || 0);
+    return Number.isFinite(taps) ? Math.min(Math.max(0, taps), IDLE_LOGOUT_TAPS_TO_DISABLE) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** Resize + centre-crop a chosen image to a small square JPEG data URL (keeps profile photos tiny). */
