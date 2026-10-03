@@ -13,10 +13,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 const PAGE = 30;
 const MAX_IMAGE_ZOOM = 5;
+const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢", "🙏"];
 const URL_PATTERN = /https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>"']*)?/gi;
 
 type ImageTransform = { scale: number; x: number; y: number };
 type ImagePointer = { x: number; y: number };
+type MessageReaction = { message_id: string; user_id: string; emoji: string; created_at: string };
 type ImageGesture = {
   kind: "pan" | "pinch";
   start: ImageTransform;
@@ -77,6 +79,7 @@ function renderLinkedText(content: string): ReactNode[] {
 
 export function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
   const [msgs, setMsgs] = useState<Message[]>([]);
+  const [reactions, setReactions] = useState<MessageReaction[]>([]);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [text, setText] = useState("");
@@ -127,6 +130,9 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const messageElements = useRef(new Map<string, HTMLDivElement>());
   const pendingScrollId = useRef<string | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
+  const longPressTriggered = useRef(false);
+  const messageIds = useRef(new Set<string>());
+  const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
 
@@ -247,6 +253,21 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     setHasMore(rows.length === PAGE);
     if (before && scroller.current) prevHeight.current = scroller.current.scrollHeight;
     setMsgs((m) => (before ? [...rows, ...m] : rows));
+    if (rows.length) {
+      const ids = rows.map((message) => message.id);
+      const { data: reactionRows, error: reactionError } = await supabase
+        .from("message_reactions")
+        .select("*")
+        .in("message_id", ids);
+      if (reactionError) {
+        console.error("Could not load message reactions:", reactionError);
+      } else {
+        setReactions((current) => [
+          ...current.filter((reaction) => !ids.includes(reaction.message_id)),
+          ...(reactionRows ?? []),
+        ]);
+      }
+    }
     setLoading(false);
   }, [me.id, peer.id]);
 
@@ -276,6 +297,27 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     bus.addEventListener("msg", on);
     return () => bus.removeEventListener("msg", on);
   }, [peer.id, me.id, markRead]);
+
+  useEffect(() => {
+    messageIds.current = new Set(msgs.map((message) => message.id));
+  }, [msgs]);
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`message-reactions:${[me.id, peer.id].sort().join(":")}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "message_reactions" }, (payload) => {
+        const row = (payload.eventType === "DELETE" ? payload.old : payload.new) as MessageReaction;
+        if (!row.message_id || !messageIds.current.has(row.message_id)) return;
+        setReactions((current) => {
+          const remaining = current.filter(
+            (reaction) => !(reaction.message_id === row.message_id && reaction.user_id === row.user_id),
+          );
+          return payload.eventType === "DELETE" ? remaining : [...remaining, row];
+        });
+      })
+      .subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [me.id, peer.id]);
 
   // Typing channel
   useEffect(() => {
@@ -635,7 +677,49 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       return n;
     });
   const startSel = (id: string) => setSel(new Set([id]));
-  const cancelPress = () => clearTimeout(pressTimer.current);
+  const cancelPress = () => {
+    clearTimeout(pressTimer.current);
+    if (longPressTriggered.current) {
+      window.setTimeout(() => { longPressTriggered.current = false; }, 0);
+    }
+  };
+  const consumeLongPressClick = (event: React.MouseEvent) => {
+    if (!longPressTriggered.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+    longPressTriggered.current = false;
+  };
+  const toggleReaction = async (message: Message, emoji: string) => {
+    const existing = reactions.find((reaction) => reaction.message_id === message.id && reaction.user_id === me.id);
+    if (existing?.emoji === emoji) {
+      const { error } = await supabase
+        .from("message_reactions")
+        .delete()
+        .eq("message_id", message.id)
+        .eq("user_id", me.id);
+      if (error) {
+        console.error("Could not remove message reaction:", error);
+        alert("Could not remove your reaction. Please try again.");
+        return;
+      }
+      setReactions((current) => current.filter((reaction) => !(reaction.message_id === message.id && reaction.user_id === me.id)));
+      return;
+    }
+    const { data, error } = await supabase
+      .from("message_reactions")
+      .upsert({ message_id: message.id, user_id: me.id, emoji }, { onConflict: "message_id,user_id" })
+      .select()
+      .single();
+    if (error) {
+      console.error("Could not save message reaction:", error);
+      alert("Could not save your reaction. Please try again.");
+      return;
+    }
+    setReactions((current) => [
+      ...current.filter((reaction) => !(reaction.message_id === message.id && reaction.user_id === me.id)),
+      data,
+    ]);
+  };
   const markDeletedLocally = (ids: Set<string>) =>
     setMsgs((l) => l.map((m) => (ids.has(m.id) && !m.deleted_for?.includes(me.id) ? { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] } : m)));
 
@@ -824,7 +908,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                   ref={(element) => { if (element) messageElements.current.set(m.id, element); else messageElements.current.delete(m.id); }}
                   className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", sel?.has(m.id) && "bg-primary/10", sel && "cursor-pointer")}
                   onClick={sel ? () => toggleSel(m.id) : undefined}
-                  onPointerDown={!sel && !m.deleted_for_everyone ? () => { pressTimer.current = window.setTimeout(() => startSel(m.id), 500); } : undefined}
+                  onClickCapture={consumeLongPressClick}
+                  onPointerDown={!sel && !m.deleted_for_everyone ? () => {
+                    pressTimer.current = window.setTimeout(() => {
+                      longPressTriggered.current = true;
+                      setOpenMessageMenu(m.id);
+                    }, 500);
+                  } : undefined}
                   onPointerUp={cancelPress}
                   onPointerLeave={cancelPress}
                   onPointerCancel={cancelPress}
@@ -833,11 +923,23 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                   {sel && <div className={cn(mine && "order-last")}><Tick on={sel.has(m.id)} /></div>}
                   <div className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in")}>
                     {!m.deleted_for_everyone && (
-                      <DropdownMenu>
+                      <DropdownMenu open={openMessageMenu === m.id} onOpenChange={(open) => setOpenMessageMenu(open ? m.id : null)}>
                         <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
                           <ChevronDown className="h-4 w-4" />
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align={mine ? "end" : "start"}>
+                        <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => setOpenMessageMenu(null)}>
+                          <div role="group" aria-label="React to message" className="flex items-center justify-between gap-1 border-b px-1 pb-1">
+                            {QUICK_REACTIONS.map((emoji) => (
+                              <DropdownMenuItem
+                                key={emoji}
+                                onSelect={() => void toggleReaction(m, emoji)}
+                                className="h-9 w-9 justify-center p-0 text-xl"
+                                aria-label={`React ${emoji}`}
+                              >
+                                {emoji}
+                              </DropdownMenuItem>
+                            ))}
+                          </div>
                           <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
                           {mine && m.type === "text" && <DropdownMenuItem onClick={() => { setReply(null); setEditing(m); setText(m.content ?? ""); }}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
                           {m.type === "image" && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => void openViewOnceImage(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once photo</DropdownMenuItem>}
@@ -885,6 +987,25 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                       <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
                       {mine && !m.deleted_for_everyone && (m.status === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", m.status === "read" && "text-tick-read")} />)}
                     </div>
+                    {!m.deleted_for_everyone && reactions.some((reaction) => reaction.message_id === m.id) && (
+                      <div className="mt-1 flex flex-wrap gap-1" aria-label="Message reactions">
+                        {[...new Set(reactions.filter((reaction) => reaction.message_id === m.id).map((reaction) => reaction.emoji))].map((emoji) => {
+                          const emojiReactions = reactions.filter((reaction) => reaction.message_id === m.id && reaction.emoji === emoji);
+                          const reactedByMe = emojiReactions.some((reaction) => reaction.user_id === me.id);
+                          return (
+                            <button
+                              key={emoji}
+                              type="button"
+                              onClick={() => void toggleReaction(m, emoji)}
+                              className={cn("rounded-full border px-1.5 py-0.5 text-xs", reactedByMe ? "border-primary/50 bg-primary/10" : "border-border bg-background/60")}
+                              aria-label={`${emoji}, ${emojiReactions.length} ${emojiReactions.length === 1 ? "reaction" : "reactions"}${reactedByMe ? ", reacted by you" : ""}`}
+                            >
+                              {emoji} {emojiReactions.length}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
