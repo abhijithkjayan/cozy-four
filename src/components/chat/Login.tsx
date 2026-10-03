@@ -4,6 +4,7 @@ import lionLogo from "@/assets/ontario-logo.jpg.asset.json";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
 import { IDLE_LOGOUT_DISABLED_KEY } from "@/lib/security";
 import { ensureAccounts } from "@/lib/accounts.functions";
+import { sendTelegramAlert } from "@/lib/telegram.functions";
 
 export function Login() {
   const [uid, setUid] = useState("");
@@ -66,6 +67,7 @@ export function Login() {
           .from("login_activity")
           .insert({ user_id: authData.user.id });
         if (activityError) console.error("Could not record login activity", activityError);
+        sendTelegramAlert({ kind: "login" });
       }
     }
   };

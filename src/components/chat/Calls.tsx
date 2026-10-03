@@ -6,6 +6,7 @@ import { loadIceServers } from "@/lib/ice";
 import { startRing, stopRing, notify } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
 import { idleState } from "@/lib/security";
+import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { Avatar } from "./Avatar";
 import { cn } from "@/lib/utils";
 
@@ -103,7 +104,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const content = connected ? `${i.video ? "Video" : "Voice"} call • ${fmtDur(dur)}` : `Missed ${i.video ? "video" : "voice"} call`;
     await supabase.from("calls").update({ status: connected ? "ended" : "missed", ended_at: new Date().toISOString() }).eq("id", i.id);
     const { data } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: i.peer.id, type: "call", content }).select().single();
-    if (data) emitMsg(data as Message);
+    if (data) {
+      emitMsg(data as Message);
+      if (i.peer.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
+    }
   };
 
   const finish = useCallback(async (notifyPeer: boolean) => {

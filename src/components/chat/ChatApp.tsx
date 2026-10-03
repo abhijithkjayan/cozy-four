@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Bell, Camera, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
-import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "@/lib/supabase";
+import { Archive, ArchiveRestore, ArrowLeft, Bell, BellOff, Camera, ChevronDown, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
+import { supabase, type Message, type Profile, emitMsg, bus, hideChatForMe, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
-import { notify } from "@/lib/tones";
+import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
 import { cn } from "@/lib/utils";
 import { secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
 import { AvatarCropper } from "./AvatarCropper";
@@ -40,6 +40,14 @@ export function ChatApp({ userId }: { userId: string }) {
   const [listView, setListView] = useState<"chats" | "calls">("chats");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileTarget, setProfileTarget] = useState<Profile | null>(null);
+  const [notifOn, setNotifOn] = useState(false);
+  const [archived, toggleArchived] = useStoredSet(me ? `archived-chats:${me.id}` : null);
+  const [muted, toggleMuted, mutedRef] = useStoredSet(me ? `muted-chats:${me.id}` : null);
+  const [showArchived, setShowArchived] = useState(false);
+  const [rowMenu, setRowMenu] = useState<string | null>(null);
+  const [chatVersion, setChatVersion] = useState(0);
+  const rowPressTimer = useRef<number | undefined>(undefined);
+  const rowLongPressed = useRef(false);
   const { left, disabled: idleLogoutDisabled, tapCountdown } = useIdleLogout();
   useGlobalLogout();
   const photoRef = useRef<HTMLInputElement>(null);
@@ -79,6 +87,33 @@ export function ChatApp({ userId }: { userId: string }) {
     if (error) return alert("Could not pin this chat. Please try again.");
     setPinned((current) => new Set(current).add(peerId));
   };
+
+  const toggleArchive = (peerId: string) => {
+    const archiving = !archived.has(peerId);
+    if (archiving && pinned.has(peerId)) void togglePin(peerId);
+    toggleArchived(peerId, archiving);
+  };
+
+  const deleteChat = async (peerId: string) => {
+    if (!me) return;
+    const name = peers.find((p) => p.id === peerId)?.display_name ?? "this chat";
+    if (!window.confirm(`Delete chat with ${name}? Messages are removed for you only.`)) return;
+    if (!(await hideChatForMe(me.id, peerId))) return alert("Could not delete this chat. Please try again.");
+    setLast((l) => ({ ...l, [peerId]: undefined }));
+    setUnread((u) => ({ ...u, [peerId]: 0 }));
+    if (selRef.current === peerId) setChatVersion((v) => v + 1); // reload the open conversation
+  };
+
+  // Tap and hold (or right-click) a chat to open its menu.
+  const startRowPress = (peerId: string) => {
+    rowLongPressed.current = false;
+    clearTimeout(rowPressTimer.current);
+    rowPressTimer.current = window.setTimeout(() => {
+      rowLongPressed.current = true;
+      setRowMenu(peerId);
+    }, 500);
+  };
+  const cancelRowPress = () => clearTimeout(rowPressTimer.current);
 
   const openProfile = useCallback((profile: Profile) => {
     setProfileTarget(profile);
@@ -243,7 +278,10 @@ export function ChatApp({ userId }: { userId: string }) {
         if (!visible && m.type !== "call") {
           setUnread((u) => ({ ...u, [peer]: (u[peer] ?? 0) + 1 }));
           const who = allRef.current.find((p) => p.id === peer)?.display_name ?? "New message";
-          notify(who, preview(m, meId));
+          if (!mutedRef.current.has(peer)) {
+            if (!alertsMuted()) messageTone();
+            void notify(who, preview(m, meId), `chat-${peer}`);
+          }
         }
       }
     };
@@ -269,20 +307,41 @@ export function ChatApp({ userId }: { userId: string }) {
       supabase.removeChannel(ch);
       bus.removeEventListener("msg", onLocal);
     };
-  }, [me?.id]);
+  }, [me?.id, mutedRef]);
+
+  // Notification state survives logout: logging out removes the service worker, so register it again.
+  useEffect(() => {
+    const on = notificationsEnabled();
+    setNotifOn(on);
+    if (on) void registerNotificationWorker();
+  }, []);
+
+  // Unread count on the browser tab ("(3) Ontario ISP") and on the installed app icon.
+  const totalUnread = Object.values(unread).reduce((sum, n) => sum + n, 0);
+  const baseTitle = useRef<string | null>(null);
+  useEffect(() => {
+    baseTitle.current ??= document.title.replace(/^\(\d+\)\s*/, "");
+    document.title = totalUnread ? `(${totalUnread}) ${baseTitle.current}` : baseTitle.current;
+    const nav = navigator as Navigator & { setAppBadge?: (n: number) => Promise<void>; clearAppBadge?: () => Promise<void> };
+    if (totalUnread) void nav.setAppBadge?.(totalUnread).catch(() => {});
+    else void nav.clearAppBadge?.().catch(() => {});
+  }, [totalUnread]);
+  useEffect(() => () => {
+    if (baseTitle.current) document.title = baseTitle.current;
+  }, []);
 
   const clearUnread = useCallback((id: string) => setUnread((u) => ({ ...u, [id]: 0 })), []);
 
   const askNotify = async () => {
+    if (notifOn) {
+      setNotificationsOff(true);
+      setNotifOn(false);
+      return;
+    }
     const sendTestNotification = async () => {
-      if ("serviceWorker" in navigator) {
-        try {
-          await navigator.serviceWorker.register("/notification-sw.js");
-          await navigator.serviceWorker.ready;
-        } catch (error) {
-          console.error("Could not register the notification service worker:", error);
-        }
-      }
+      setNotificationsOff(false);
+      setNotifOn(true);
+      await registerNotificationWorker();
       const testNotificationSent = await notify(
         "Notifications enabled",
         "Browser notifications are ready on this device.",
@@ -340,10 +399,14 @@ export function ChatApp({ userId }: { userId: string }) {
     );
   if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
 
-  const sorted = [...peers].sort((a, b) => {
-    const pinOrder = Number(pinned.has(b.id)) - Number(pinned.has(a.id));
-    return pinOrder || new Date(last[b.id]?.created_at ?? 0).getTime() - new Date(last[a.id]?.created_at ?? 0).getTime();
-  });
+  const sorted = [...peers]
+    .filter((p) => archived.has(p.id) === showArchived)
+    .sort((a, b) => {
+      const pinOrder = Number(pinned.has(b.id)) - Number(pinned.has(a.id));
+      return pinOrder || new Date(last[b.id]?.created_at ?? 0).getTime() - new Date(last[a.id]?.created_at ?? 0).getTime();
+    });
+  const archivedCount = peers.filter((p) => archived.has(p.id)).length;
+  const archivedUnread = peers.reduce((sum, p) => sum + (archived.has(p.id) ? unread[p.id] ?? 0 : 0), 0);
   const peer = peers.find((p) => p.id === sel);
 
   return (
@@ -384,7 +447,7 @@ export function ChatApp({ userId }: { userId: string }) {
                 <DropdownMenuItem onClick={() => photoRef.current?.click()}><Camera className="mr-2 h-4 w-4" />{photoBusy ? "Saving…" : "Change profile photo"}</DropdownMenuItem>
                 {me.avatar_url && <DropdownMenuItem onClick={() => setAvatar(null)}><Trash2 className="mr-2 h-4 w-4" />Remove profile photo</DropdownMenuItem>}
                 <DropdownMenuItem onClick={toggleDark}>{dark ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}{dark ? "Light mode" : "Dark mode"}</DropdownMenuItem>
-                <DropdownMenuItem onClick={askNotify}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
+                <DropdownMenuItem onClick={askNotify}>{notifOn ? <BellOff className="mr-2 h-4 w-4" /> : <Bell className="mr-2 h-4 w-4" />}{notifOn ? "Disable notifications" : "Enable notifications"}</DropdownMenuItem>
                 <DropdownMenuItem onClick={() => secureLogout(true)} className="text-muted-foreground focus:text-foreground"><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -401,29 +464,76 @@ export function ChatApp({ userId }: { userId: string }) {
           {listView === "calls" ? (
             <CallLog userId={me.id} profiles={all} onViewProfile={openProfile} />
           ) : <ul className="flex-1 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]">
+            {showArchived ? (
+              <li>
+                <button type="button" onClick={() => setShowArchived(false)} className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm font-medium text-primary hover:bg-muted">
+                  <ArrowLeft size={18} /> Archived chats
+                </button>
+              </li>
+            ) : archivedCount > 0 && (
+              <li>
+                <button type="button" onClick={() => setShowArchived(true)} className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-muted">
+                  <span className="flex h-12 w-12 items-center justify-center text-primary"><Archive size={20} /></span>
+                  <span className="flex-1 font-medium">Archived</span>
+                  <span className="text-xs font-medium text-primary">{archivedUnread || archivedCount}</span>
+                </button>
+              </li>
+            )}
+            {showArchived && sorted.length === 0 && <li className="px-4 py-8 text-center text-sm text-muted-foreground">No archived chats.</li>}
             {sorted.map((p) => {
               const m = last[p.id];
               const n = unread[p.id] ?? 0;
+              const isPinned = pinned.has(p.id);
+              const isMuted = muted.has(p.id);
+              const isArchived = archived.has(p.id);
               return (
                 <li key={p.id}>
-                  <div className={cn("flex items-center gap-1 px-2 transition", sel === p.id && "bg-muted")}>
+                  <div
+                    className={cn("group flex select-none items-center gap-1 px-2 transition [-webkit-touch-callout:none]", sel === p.id && "bg-muted")}
+                    onPointerDown={() => startRowPress(p.id)}
+                    onPointerUp={cancelRowPress}
+                    onPointerLeave={cancelRowPress}
+                    onPointerCancel={cancelRowPress}
+                    onPointerMove={(event) => { if (event.pointerType !== "mouse") cancelRowPress(); }}
+                    onContextMenu={(event) => { event.preventDefault(); cancelRowPress(); setRowMenu(p.id); }}
+                    onClickCapture={(event) => {
+                      if (!rowLongPressed.current) return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      rowLongPressed.current = false;
+                    }}
+                  >
                     <button onClick={() => openChat(p.id)} className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-2 text-left active:bg-muted md:hover:bg-muted">
                       <Avatar p={p} online={online.has(p.id)} away={away.has(p.id)} />
                       <div className="min-w-0 flex-1 border-b border-border/60 pb-2">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="truncate font-medium">{p.display_name}</span>
-                        {m && <span className={cn("shrink-0 text-xs", n ? "font-medium text-primary" : "text-muted-foreground")}>{listTime(m.created_at)}</span>}
+                        {m && <span className={cn("shrink-0 text-xs", n && !isMuted ? "font-medium text-primary" : "text-muted-foreground")}>{listTime(m.created_at)}</span>}
                       </div>
                       {p.status_text && <div className="truncate text-xs text-muted-foreground">{p.status_text}</div>}
                       <div className="mt-0.5 flex items-center justify-between gap-2">
                         <span className="truncate text-sm text-muted-foreground">{preview(m, me.id)}</span>
-                        {n > 0 && <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-primary-foreground">{n}</span>}
+                        <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
+                          {isMuted && <BellOff size={14} aria-label="Muted" />}
+                          {isPinned && <Pin size={14} aria-label="Pinned" />}
+                          {n > 0 && <span className={cn("flex h-5 min-w-5 items-center justify-center rounded-full px-1.5 text-[11px] font-semibold", isMuted ? "bg-muted-foreground/60 text-background" : "bg-primary text-primary-foreground")}>{n}</span>}
+                        </span>
                       </div>
                       </div>
                     </button>
-                    <button type="button" onClick={() => void togglePin(p.id)} className={cn("flex h-10 w-10 shrink-0 items-center justify-center rounded-full hover:bg-muted", pinned.has(p.id) ? "text-primary" : "text-muted-foreground")} aria-label={pinned.has(p.id) ? `Unpin ${p.display_name}` : `Pin ${p.display_name}`} title={pinned.has(p.id) ? "Unpin chat" : "Pin chat"}>
-                      {pinned.has(p.id) ? <PinOff size={17} /> : <Pin size={17} />}
-                    </button>
+                    <DropdownMenu open={rowMenu === p.id} onOpenChange={(open) => setRowMenu(open ? p.id : null)}>
+                      <DropdownMenuTrigger className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-muted md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 md:data-[state=open]:opacity-100" aria-label={`Chat options for ${p.display_name}`}>
+                        <ChevronDown size={18} />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        {!isArchived && (
+                          <DropdownMenuItem onClick={() => void togglePin(p.id)}>{isPinned ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{isPinned ? "Unpin chat" : "Pin chat"}</DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem onClick={() => toggleArchive(p.id)}>{isArchived ? <ArchiveRestore className="mr-2 h-4 w-4" /> : <Archive className="mr-2 h-4 w-4" />}{isArchived ? "Unarchive chat" : "Archive chat"}</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => toggleMuted(p.id)}>{isMuted ? <Bell className="mr-2 h-4 w-4" /> : <BellOff className="mr-2 h-4 w-4" />}{isMuted ? "Unmute notifications" : "Mute notifications"}</DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => void deleteChat(p.id)} className="text-destructive focus:text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete chat</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </li>
               );
@@ -432,7 +542,7 @@ export function ChatApp({ userId }: { userId: string }) {
         </aside>
         <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={peer.id} me={me} peer={peer} online={online.has(peer.id)} away={away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
+            <Conversation key={`${peer.id}:${chatVersion}`} me={me} peer={peer} online={online.has(peer.id)} away={away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">Ontario ISP</p>
@@ -455,4 +565,36 @@ export function ChatApp({ userId }: { userId: string }) {
       />
     </CallProvider>
   );
+}
+
+/** A set of ids saved per device in localStorage (used for archived and muted chats). */
+function useStoredSet(storageKey: string | null) {
+  const [items, setItems] = useState<Set<string>>(() => new Set());
+  const ref = useRef(items);
+  useEffect(() => {
+    if (!storageKey) return;
+    let next = new Set<string>();
+    try {
+      const saved: unknown = JSON.parse(localStorage.getItem(storageKey) ?? "[]");
+      if (Array.isArray(saved)) next = new Set(saved.filter((id): id is string => typeof id === "string"));
+    } catch {
+      // Unreadable storage: start empty.
+    }
+    ref.current = next;
+    setItems(next);
+  }, [storageKey]);
+  const toggle = useCallback((id: string, on?: boolean) => {
+    const next = new Set(ref.current);
+    if (on ?? !next.has(id)) next.add(id);
+    else next.delete(id);
+    ref.current = next;
+    setItems(next);
+    if (!storageKey) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify([...next]));
+    } catch {
+      // Private mode / storage full: the change still applies for this session.
+    }
+  }, [storageKey]);
+  return [items, toggle, ref] as const;
 }

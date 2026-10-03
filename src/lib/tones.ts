@@ -3,6 +3,7 @@ const ac = () => (ctx ??= new (window.AudioContext || (window as any).webkitAudi
 
 function beep(freq: number, dur: number, at = 0, vol = 0.12) {
   const c = ac();
+  if (c.state === "suspended") void c.resume();
   const o = c.createOscillator();
   const g = c.createGain();
   o.frequency.value = freq;
@@ -36,9 +37,45 @@ export function stopRing() {
   ringTimer = null;
 }
 
-export async function notify(title: string, body: string): Promise<boolean> {
+const NOTIFICATIONS_OFF_KEY = "notifications-off";
+
+/** True when the browser allows notifications and the user hasn't switched them off in the app. */
+export function notificationsEnabled() {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
-  const options = { body, icon: "/icon-192.png" };
+  try { return localStorage.getItem(NOTIFICATIONS_OFF_KEY) !== "1"; } catch { return true; }
+}
+
+/** True when the user switched alerts off in the app (mutes popups and message sounds). */
+export function alertsMuted() {
+  try { return localStorage.getItem(NOTIFICATIONS_OFF_KEY) === "1"; } catch { return false; }
+}
+
+export function setNotificationsOff(off: boolean) {
+  try {
+    if (off) localStorage.setItem(NOTIFICATIONS_OFF_KEY, "1");
+    else localStorage.removeItem(NOTIFICATIONS_OFF_KEY);
+  } catch {}
+}
+
+/** (Re-)registers the service worker that shows notifications and focuses the app when one is clicked. */
+export async function registerNotificationWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    await navigator.serviceWorker.register("/notification-sw.js");
+    await navigator.serviceWorker.ready;
+  } catch (error) {
+    console.error("Could not register the notification service worker:", error);
+  }
+}
+
+/** Shows a system notification. `tag` groups notifications per chat; each new one still pops up. */
+export async function notify(title: string, body: string, tag?: string): Promise<boolean> {
+  if (!notificationsEnabled()) return false;
+  const options: NotificationOptions & { renotify?: boolean } = { body, icon: "/icon-192.png", badge: "/icon-192.png" };
+  if (tag) {
+    options.tag = tag;
+    options.renotify = true;
+  }
 
   try {
     const registration = "serviceWorker" in navigator

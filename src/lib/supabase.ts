@@ -46,3 +46,21 @@ export const pairFilter = (a: string, b: string) =>
 
 export const bus = new EventTarget();
 export const emitMsg = (m: Message) => bus.dispatchEvent(new CustomEvent("msg", { detail: m }));
+
+/** Hides every message between two users for `meId` only (WhatsApp "Delete chat" / "Clear chat for me"). */
+export async function hideChatForMe(meId: string, peerId: string) {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("id, deleted_for")
+    .or(pairFilter(meId, peerId))
+    .not("deleted_for", "cs", `{${meId}}`);
+  if (error) return false;
+  const rows = (data ?? []) as { id: string; deleted_for: string[] | null }[];
+  for (let i = 0; i < rows.length; i += 15) {
+    const results = await Promise.all(
+      rows.slice(i, i + 15).map((r) => supabase.from("messages").update({ deleted_for: [...(r.deleted_for ?? []), meId] }).eq("id", r.id)),
+    );
+    if (results.some((r) => r.error)) return false;
+  }
+  return true;
+}
