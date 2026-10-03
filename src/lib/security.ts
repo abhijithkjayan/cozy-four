@@ -16,10 +16,13 @@ export async function secureLogout() {
 /** Logs the user out after 1 min without touching the app. Returns the seconds remaining. */
 export function useIdleLogout() {
   const last = useRef(Date.now());
-  const [left, setLeft] = useState<number | null>(null);
+  const [left, setLeft] = useState(Math.ceil(IDLE_LIMIT_MS / 1000));
 
   useEffect(() => {
-    const mark = () => { last.current = Date.now(); };
+    const mark = () => {
+      last.current = Date.now();
+      setLeft(Math.ceil(IDLE_LIMIT_MS / 1000));
+    };
     let lastMove = 0;
     const throttled = () => { const n = Date.now(); if (n - lastMove > 1000) { lastMove = n; mark(); } };
     const strong = ["pointerdown", "keydown", "touchstart", "click", "wheel"];
@@ -28,7 +31,7 @@ export function useIdleLogout() {
     window.addEventListener("scroll", throttled, { passive: true, capture: true });
 
     const check = () => {
-      if (idleState.paused) { mark(); setLeft(null); return; }
+      if (idleState.paused) { mark(); return; }
       const idle = Date.now() - last.current;
       if (idle >= IDLE_LIMIT_MS) { secureLogout(); return; }
       setLeft(Math.ceil((IDLE_LIMIT_MS - idle) / 1000));
@@ -66,7 +69,7 @@ export function useIdleLogout() {
     };
   }, []);
 
-  return { left, stay: () => { last.current = Date.now(); setLeft(null); } };
+  return { left, stay: () => { last.current = Date.now(); setLeft(Math.ceil(IDLE_LIMIT_MS / 1000)); } };
 }
 
 /** Resize + centre-crop a chosen image to a small square JPEG data URL (keeps profile photos tiny). */

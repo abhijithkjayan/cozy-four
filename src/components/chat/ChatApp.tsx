@@ -286,7 +286,16 @@ export function ChatApp({ userId }: { userId: string }) {
   return (
     <CallProvider me={me} profiles={all}>
       <div className="app-shell flex flex-col overflow-hidden bg-background" onClick={askNotify}>
-        <div className="flex h-8 shrink-0 items-center justify-center bg-primary text-xs font-bold tracking-[0.35em] text-primary-foreground">CYBER SECURITY WING</div>
+        <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
+          <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <span className="rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums sm:px-2 sm:text-xs" aria-label={`Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`} title="Automatic logout countdown">{Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>
+            <button onClick={() => secureLogout()} className="flex h-8 w-8 items-center justify-center rounded-lg bg-destructive text-destructive-foreground shadow-sm hover:opacity-90 sm:w-auto sm:gap-1.5 sm:px-3" aria-label="Log out">
+              <LogOut className="h-4 w-4" />
+              <span className="hidden text-xs font-semibold sm:inline">Log out</span>
+            </button>
+          </div>
+        </div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
           <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
@@ -302,11 +311,6 @@ export function ChatApp({ userId }: { userId: string }) {
               <AvatarCropper file={cropFile} onCancel={() => setCropFile(null)} onDone={(url) => { setCropFile(null); void setAvatar(url); }} />
             </div>
             <div className="flex items-center gap-1">
-              {left !== null && <span className="rounded-md bg-muted px-1.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground sm:px-2 sm:text-xs" aria-label={`Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`} title="Automatic logout countdown">{Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>}
-              <button onClick={() => secureLogout()} className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-2 text-xs font-semibold text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
-                <LogOut className="h-4 w-4" />
-                <span>Log out</span>
-              </button>
             <DropdownMenu>
               <DropdownMenuTrigger className="rounded-full p-2 text-muted-foreground hover:bg-muted" aria-label="Menu">
                 <MoreVertical className="h-5 w-5" />
