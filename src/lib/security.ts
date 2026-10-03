@@ -36,7 +36,23 @@ export function useIdleLogout() {
     };
     const t = setInterval(check, 1000);
     // Timers are paused in background tabs, so re-check the moment the user comes back
-    const onVis = () => { if (document.visibilityState === "visible") check(); };
+    // Log out as soon as the tab is hidden/minimised (short grace so the photo picker doesn't trigger it)
+    let hiddenAt = 0;
+    let hideTimer: number | undefined;
+    const onVis = () => {
+      if (document.visibilityState === "hidden") {
+        if (idleState.paused) return;
+        hiddenAt = Date.now();
+        hideTimer = window.setTimeout(() => { if (document.visibilityState === "hidden" && !idleState.paused) secureLogout(); }, 3000);
+      } else {
+        clearTimeout(hideTimer);
+        if (hiddenAt && Date.now() - hiddenAt > 3000 && !idleState.paused) { secureLogout(); return; }
+        hiddenAt = 0;
+        check();
+      }
+    };
+    const onHide = () => { if (!idleState.paused) secureLogout(); };
+    window.addEventListener("pagehide", onHide);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onVis);
     return () => {
@@ -46,6 +62,8 @@ export function useIdleLogout() {
       window.removeEventListener("scroll", throttled, true);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onVis);
+      window.removeEventListener("pagehide", onHide);
+      clearTimeout(hideTimer);
     };
   }, []);
 
