@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -53,6 +53,10 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Message[]>([]);
   const [searching, setSearching] = useState(false);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryTab, setGalleryTab] = useState<"media" | "audio" | "links">("media");
+  const [galleryMessages, setGalleryMessages] = useState<Message[]>([]);
   const messageElements = useRef(new Map<string, HTMLDivElement>());
   const pendingScrollId = useRef<string | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
@@ -180,6 +184,56 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       return next.sort((a, b) => a.created_at.localeCompare(b.created_at));
     });
     setSearchOpen(false);
+  };
+
+  const openGallery = async () => {
+    setGalleryOpen(true);
+    setGalleryLoading(true);
+    const [media, links] = await Promise.all([
+      supabase
+        .from("messages")
+        .select("*")
+        .or(pairFilter(me.id, peer.id))
+        .in("type", ["image", "audio", "gif", "sticker"])
+        .not("deleted_for", "cs", `{${me.id}}`)
+        .eq("deleted_for_everyone", false)
+        .order("created_at", { ascending: false })
+        .limit(500),
+      supabase
+        .from("messages")
+        .select("*")
+        .or(pairFilter(me.id, peer.id))
+        .eq("type", "text")
+        .not("deleted_for", "cs", `{${me.id}}`)
+        .eq("deleted_for_everyone", false)
+        .order("created_at", { ascending: false })
+        .limit(500),
+    ]);
+    setGalleryLoading(false);
+    if (media.error || links.error) {
+      alert("Could not load this chat's media gallery. Please try again.");
+      setGalleryOpen(false);
+      return;
+    }
+    setGalleryMessages([...(media.data ?? []), ...(links.data ?? [])] as Message[]);
+  };
+
+  const galleryMedia = galleryMessages.filter((message) => ["image", "gif", "sticker"].includes(message.type));
+  const galleryAudio = galleryMessages.filter((message) => message.type === "audio");
+  const galleryLinks = galleryMessages.flatMap((message) => {
+    if (message.type !== "text" || !message.content) return [];
+    const urls = message.content.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
+    return urls.map((url) => ({ message, url: url.replace(/[),.!?]+$/, "") }));
+  });
+  const jumpToGalleryMessage = (message: Message) => {
+    setGalleryOpen(false);
+    window.setTimeout(() => {
+      if (msgs.some((item) => item.id === message.id)) {
+        messageElements.current.get(message.id)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      } else {
+        openSearchResult(message);
+      }
+    }, 0);
   };
 
   const onType = (v: string) => {
@@ -554,6 +608,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
         </button>
         <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
         <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
+        <button onClick={() => void openGallery()} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Shared media gallery" title="Shared media, audio and links"><Images className="h-5 w-5" /></button>
         <DropdownMenu>
           <DropdownMenuTrigger className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Chat menu"><MoreVertical className="h-5 w-5" /></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -636,7 +691,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                       </div>
                     )}
                     {m.deleted_for_everyone ? (
-                      <p className="px-1 pr-16 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
+                      <p className="px-1 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
                     ) : m.type === "image" && m.media_url && m.view_once && !mine && m.view_once_opened_at ? (
                       <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This photo was opened</p>
                     ) : m.type === "image" && m.media_url && m.view_once && !mine ? (
@@ -658,10 +713,10 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                         <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
                       </button>
                     ) : (
-                      <p className="whitespace-pre-wrap break-words px-1 pr-16 text-[15px] leading-snug">{m.content}</p>
+                      <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{m.content}</p>
                     )}
-                    <div className="-mt-3.5 flex items-center justify-end gap-1 pl-4 text-[11px] text-muted-foreground">
-                      <span>{fmtTime(m.created_at)}</span>
+                    <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
+                      <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
                       {mine && !m.deleted_for_everyone && (m.status === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", m.status === "read" && "text-tick-read")} />)}
                     </div>
                   </div>
@@ -800,6 +855,106 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           {searchResults.length === 50 && <p className="mt-2 text-center text-xs text-muted-foreground">Showing the 50 most recent matches.</p>}
           <button type="button" disabled={searching} onClick={() => setSearchOpen(false)} className="mt-3 w-full rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-50">Close</button>
         </Modal>
+      )}
+
+      {galleryOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4" onClick={() => setGalleryOpen(false)}>
+          <section
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="shared-gallery-title"
+            className="flex max-h-[90dvh] w-full max-w-3xl flex-col overflow-hidden rounded-t-2xl bg-card shadow-xl sm:rounded-2xl"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="flex items-center gap-3 border-b px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <h3 id="shared-gallery-title" className="truncate font-semibold">{peer.display_name}</h3>
+                <p className="text-xs text-muted-foreground">Shared media, audio and links</p>
+              </div>
+              <button type="button" onClick={() => setGalleryOpen(false)} className="flex h-10 w-10 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close media gallery"><X className="h-5 w-5" /></button>
+            </header>
+            <div className="flex border-b px-3" role="tablist" aria-label="Shared items">
+              {([
+                ["media", "Media", galleryMedia.length],
+                ["audio", "Audio", galleryAudio.length],
+                ["links", "Links", galleryLinks.length],
+              ] as const).map(([tab, label, count]) => (
+                <button key={tab} type="button" role="tab" aria-selected={galleryTab === tab} onClick={() => setGalleryTab(tab)} className={cn("flex h-11 flex-1 items-center justify-center gap-1.5 border-b-2 text-sm font-medium", galleryTab === tab ? "border-primary text-primary" : "border-transparent text-muted-foreground")}>
+                  {label}<span className="text-xs opacity-70">{count}</span>
+                </button>
+              ))}
+            </div>
+            <div className="min-h-48 flex-1 overflow-y-auto p-3 sm:p-4">
+              {galleryLoading ? (
+                <p className="py-12 text-center text-sm text-muted-foreground">Loading shared items…</p>
+              ) : galleryTab === "media" ? (
+                galleryMedia.length ? (
+                  <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 sm:gap-2 md:grid-cols-5">
+                    {galleryMedia.map((message) => {
+                      const attachment = parseAttachment(message.content);
+                      const isViewOnce = message.type === "image" && message.view_once && message.sender_id !== me.id;
+                      return (
+                        <button
+                          key={message.id}
+                          type="button"
+                          onClick={() => {
+                            if (isViewOnce) {
+                              if (!message.view_once_opened_at) void openViewOnceImage(message);
+                            } else if (message.type === "image" && message.media_url) void viewImage(message);
+                            else if (attachment?.url) setViewer(attachment.url);
+                          }}
+                          className="relative aspect-square overflow-hidden rounded-md bg-muted text-left"
+                          aria-label={isViewOnce ? (message.view_once_opened_at ? "View-once photo already opened" : "Open view-once photo") : `View shared ${message.type}`}
+                        >
+                          {isViewOnce ? (
+                            <span className="flex h-full flex-col items-center justify-center gap-1 p-2 text-center text-xs text-muted-foreground">
+                              <Clock3 className="h-5 w-5 text-primary" />
+                              {message.view_once_opened_at ? "Opened" : "View once"}
+                            </span>
+                          ) : message.type === "image" && message.media_url ? (
+                            <ImageThumb path={message.media_url} onOpen={setViewer} />
+                          ) : attachment?.url ? (
+                            <img src={attachment.url} alt={attachment.title || message.type} className="h-full w-full object-cover" />
+                          ) : null}
+                          <span className="absolute inset-x-0 bottom-0 truncate bg-black/50 px-1.5 py-1 text-[10px] text-white">{fmtTime(message.created_at)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : <p className="py-12 text-center text-sm text-muted-foreground">No shared media yet.</p>
+              ) : galleryTab === "audio" ? (
+                galleryAudio.length ? (
+                  <ul className="divide-y">
+                    {galleryAudio.map((message) => (
+                      <li key={message.id} className="flex items-center justify-between gap-2 py-2">
+                        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{message.sender_id === me.id ? "You" : peer.display_name} · {fmtTime(message.created_at)}</span>
+                        <AudioPlayer path={message.media_url!} duration={Number(message.content) || 0} played={playedAudio.has(message.id)} onPlayed={() => markAudioPlayed(message.id)} />
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="py-12 text-center text-sm text-muted-foreground">No voice notes yet.</p>
+              ) : (
+                galleryLinks.length ? (
+                  <ul className="divide-y">
+                    {galleryLinks.map(({ message, url }, index) => (
+                      <li key={`${message.id}:${index}`} className="flex items-center gap-3 py-3">
+                        <Link2 className="h-5 w-5 shrink-0 text-primary" />
+                        <div className="min-w-0 flex-1">
+                          <a href={url} target="_blank" rel="noreferrer" className="block truncate text-sm text-primary hover:underline">{url}</a>
+                          <button type="button" onClick={() => jumpToGalleryMessage(message)} className="mt-1 text-xs text-muted-foreground hover:underline">
+                            {message.sender_id === me.id ? "You" : peer.display_name} · {fmtTime(message.created_at)}
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="py-12 text-center text-sm text-muted-foreground">No links shared yet.</p>
+              )}
+              {!galleryLoading && galleryMessages.length >= 1000 && <p className="mt-3 text-center text-xs text-muted-foreground">Showing the latest shared items.</p>}
+            </div>
+          </section>
+        </div>
       )}
 
       {fwdOpen && (

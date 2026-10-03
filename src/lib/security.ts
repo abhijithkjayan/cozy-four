@@ -77,7 +77,20 @@ export function useIdleLogout() {
   }, []);
 
   const tapCountdown = () => {
-    if (disabledRef.current) return;
+    if (disabledRef.current) {
+      last.current = Date.now();
+      tapCount.current = 0;
+      disabledRef.current = false;
+      setDisabled(false);
+      setLeft(Math.ceil(IDLE_LIMIT_MS / 1000));
+      try {
+        sessionStorage.removeItem(IDLE_LOGOUT_DISABLED_KEY);
+        sessionStorage.removeItem(IDLE_LOGOUT_TAPS_KEY);
+      } catch {
+        // Keep the enabled state for this mounted session if sessionStorage is unavailable.
+      }
+      return;
+    }
     tapCount.current += 1;
     try {
       sessionStorage.setItem(IDLE_LOGOUT_TAPS_KEY, String(tapCount.current));
