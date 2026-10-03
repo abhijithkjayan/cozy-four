@@ -194,9 +194,10 @@ export function ChatApp({ userId }: { userId: string }) {
   }, [userId]);
 
   // Presence + last_seen heartbeat
+  const currentProfileId = me?.id;
   useEffect(() => {
-    if (!me) return;
-    const ch = supabase.channel("presence:global", { config: { presence: { key: me.id } } });
+    if (!currentProfileId) return;
+    const ch = supabase.channel("presence:global", { config: { presence: { key: currentProfileId } } });
     const syncPresence = () => {
       const active = new Set<string>();
       const inactive = new Set<string>();
@@ -216,9 +217,23 @@ export function ChatApp({ userId }: { userId: string }) {
     ch.on("presence", { event: "sync" }, syncPresence);
     ch.subscribe((s) => s === "SUBSCRIBED" && trackPresence());
     document.addEventListener("visibilitychange", trackPresence);
-    const beat = () => supabase.from("profiles").update({ last_seen: new Date().toISOString() }).eq("id", me.id).then();
-    beat();
-    const t = setInterval(beat, 30000);
+    const updateOnlineState = () => {
+      const visible = document.visibilityState === "visible";
+      const update = visible
+        ? { is_online: true, last_seen: new Date().toISOString() }
+        : { is_online: false };
+      void supabase.from("profiles").update(update).eq("id", currentProfileId).then(({ error }) => {
+        if (error) console.error("Could not update online status:", error);
+      });
+    };
+    const markOffline = () => {
+      void supabase.from("profiles").update({ is_online: false }).eq("id", currentProfileId).then(({ error }) => {
+        if (error) console.error("Could not mark profile offline:", error);
+      });
+    };
+    updateOnlineState();
+    const t = setInterval(updateOnlineState, 30000);
+    document.addEventListener("visibilitychange", updateOnlineState);
     const pch = supabase
       .channel("profiles-changes")
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "profiles" }, ({ new: p }) =>
@@ -247,16 +262,17 @@ export function ChatApp({ userId }: { userId: string }) {
         },
       )
       .subscribe();
-    window.addEventListener("beforeunload", beat);
+    window.addEventListener("beforeunload", markOffline);
     return () => {
       clearInterval(t);
-      beat();
+      markOffline();
       document.removeEventListener("visibilitychange", trackPresence);
-      window.removeEventListener("beforeunload", beat);
+      document.removeEventListener("visibilitychange", updateOnlineState);
+      window.removeEventListener("beforeunload", markOffline);
       supabase.removeChannel(ch);
       supabase.removeChannel(pch);
     };
-  }, [me]);
+  }, [currentProfileId]);
 
   // Message stream
   useEffect(() => {
@@ -504,7 +520,11 @@ export function ChatApp({ userId }: { userId: string }) {
                     }}
                   >
                     <button onClick={() => openChat(p.id)} className="flex min-w-0 flex-1 items-center gap-3 py-3 pl-2 text-left active:bg-muted md:hover:bg-muted">
-                      <Avatar p={p} online={online.has(p.id)} away={away.has(p.id)} />
+                      <Avatar
+                        p={p}
+                        online={p.show_online_status ? online.has(p.id) : undefined}
+                        away={p.show_online_status ? away.has(p.id) : undefined}
+                      />
                       <div className="min-w-0 flex-1 border-b border-border/60 pb-2">
                       <div className="flex items-baseline justify-between gap-2">
                         <span className="truncate font-medium">{p.display_name}</span>
@@ -542,7 +562,7 @@ export function ChatApp({ userId }: { userId: string }) {
         </aside>
         <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={`${peer.id}:${chatVersion}`} me={me} peer={peer} online={online.has(peer.id)} away={away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
+            <Conversation key={`${peer.id}:${chatVersion}`} me={me} peer={peer} online={peer.show_online_status && online.has(peer.id)} away={peer.show_online_status && away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">Ontario ISP</p>
@@ -561,6 +581,21 @@ export function ChatApp({ userId }: { userId: string }) {
           setMe((current) => current ? { ...current, status_text: statusText } : current);
           setPeers((current) => current.map((profile) => profile.id === me.id ? { ...profile, status_text: statusText } : profile));
           setAll((current) => current.map((profile) => profile.id === me.id ? { ...profile, status_text: statusText } : profile));
+        }}
+        onTelegramAlertsSaved={(enabled) => {
+          setMe((current) => current ? { ...current, telegram_alerts_enabled: enabled } : current);
+          setPeers((current) => current.map((profile) => profile.id === me.id ? { ...profile, telegram_alerts_enabled: enabled } : profile));
+          setAll((current) => current.map((profile) => profile.id === me.id ? { ...profile, telegram_alerts_enabled: enabled } : profile));
+        }}
+        onOnlineVisibilitySaved={(enabled) => {
+          setMe((current) => current ? { ...current, show_online_status: enabled } : current);
+          setPeers((current) => current.map((profile) => profile.id === me.id ? { ...profile, show_online_status: enabled } : profile));
+          setAll((current) => current.map((profile) => profile.id === me.id ? { ...profile, show_online_status: enabled } : profile));
+        }}
+        onReadReceiptsSaved={(enabled) => {
+          setMe((current) => current ? { ...current, read_receipts_enabled: enabled } : current);
+          setPeers((current) => current.map((profile) => profile.id === me.id ? { ...profile, read_receipts_enabled: enabled } : profile));
+          setAll((current) => current.map((profile) => profile.id === me.id ? { ...profile, read_receipts_enabled: enabled } : profile));
         }}
       />
     </CallProvider>

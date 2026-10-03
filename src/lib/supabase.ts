@@ -11,6 +11,10 @@ export type Profile = {
   status_text: string;
   avatar_url: string | null;
   last_seen: string | null;
+  is_online: boolean;
+  telegram_alerts_enabled: boolean;
+  show_online_status: boolean;
+  read_receipts_enabled: boolean;
 };
 
 export type Message = {

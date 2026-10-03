@@ -67,6 +67,12 @@ export function Login() {
           .from("login_activity")
           .insert({ user_id: authData.user.id });
         if (activityError) console.error("Could not record login activity", activityError);
+        const { error: presenceError } = await supabase
+          .from("profiles")
+          .update({ is_online: true, last_seen: new Date().toISOString() })
+          .eq("id", authData.user.id);
+        if (presenceError)
+          console.error("Could not mark profile online after sign-in:", presenceError);
         sendTelegramAlert({ kind: "login" });
       }
     }

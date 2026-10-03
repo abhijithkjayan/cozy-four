@@ -52,13 +52,37 @@ export const telegramAlert = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const callerId = context.userId;
-    const { data: caller } = await supabaseAdmin
+    const { data: caller, error: callerError } = await supabaseAdmin
       .from("profiles")
       .select("user_id, display_name")
       .eq("id", callerId)
       .maybeSingle();
+    if (callerError) {
+      console.error("Telegram alert: could not read caller profile:", callerError);
+      return { sent: false };
+    }
     if (!caller) return { sent: false };
     const name = caller.display_name || caller.user_id;
+    const { data: alpha, error: alphaError } = await supabaseAdmin
+      .from("profiles")
+      .select("is_online, last_seen, telegram_alerts_enabled")
+      .eq("user_id", WATCHED_USER_ID)
+      .maybeSingle();
+    if (alphaError) {
+      console.error("Telegram alert: could not read Alpha alert settings:", alphaError);
+      return { sent: false };
+    }
+    if (!alpha) {
+      console.error("Telegram alert: Alpha profile was not found.");
+      return { sent: false };
+    }
+    const lastSeenAt = alpha.last_seen ? Date.parse(alpha.last_seen) : Number.NaN;
+    const alphaIsOnline =
+      alpha.is_online &&
+      Number.isFinite(lastSeenAt) &&
+      Date.now() - lastSeenAt >= 0 &&
+      Date.now() - lastSeenAt < 60_000;
+    if (!alpha.telegram_alerts_enabled || alphaIsOnline) return { sent: false };
 
     if (data.kind === "login") {
       return { sent: await sendTelegram(`🔐 ${name} logged in`) };
