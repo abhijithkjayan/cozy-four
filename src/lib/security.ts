@@ -9,7 +9,70 @@ const IDLE_LOGOUT_TAPS_TO_DISABLE = 5;
 // Set paused=true while a call is running so a long call is not cut off.
 export const idleState = { paused: false };
 
-export async function secureLogout() {
+const GLOBAL_LOGOUT_TOPIC = "app:global-logout";
+let globalLogoutChannel: ReturnType<typeof supabase.channel> | null = null;
+let globalLogoutReady = false;
+
+export function useGlobalLogout() {
+  useEffect(() => {
+    const channel = supabase
+      .channel(GLOBAL_LOGOUT_TOPIC)
+      .on("broadcast", { event: "logout" }, ({ payload }: { payload: { action?: string } }) => {
+        if (payload?.action === "manual") void secureLogout();
+      });
+    globalLogoutChannel = channel;
+    channel.subscribe((status) => {
+      if (globalLogoutChannel === channel) globalLogoutReady = status === "SUBSCRIBED";
+    });
+
+    return () => {
+      if (globalLogoutChannel === channel) {
+        globalLogoutChannel = null;
+        globalLogoutReady = false;
+      }
+      void supabase.removeChannel(channel);
+    };
+  }, []);
+}
+
+async function broadcastManualLogout() {
+  const channel = globalLogoutReady ? globalLogoutChannel : null;
+  if (channel) {
+    const result = await Promise.race([
+      channel.send({ type: "broadcast", event: "logout", payload: { action: "manual" } }),
+      new Promise<"timeout">((resolve) => window.setTimeout(() => resolve("timeout"), 1500)),
+    ]);
+    if (result === "timeout" || result !== "ok") {
+      console.error("Could not broadcast the manual logout to all connected users.");
+    }
+    return;
+  }
+
+  const temporaryChannel = supabase.channel(GLOBAL_LOGOUT_TOPIC);
+  let sent = false;
+  await Promise.race([
+    new Promise<void>((resolve) => {
+      temporaryChannel.subscribe((status) => {
+        if (status === "SUBSCRIBED" && !sent) {
+          sent = true;
+          void temporaryChannel
+            .send({ type: "broadcast", event: "logout", payload: { action: "manual" } })
+            .then((result) => {
+              if (result !== "ok") console.error("Could not broadcast the manual logout to all connected users.");
+              resolve();
+            });
+        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+          resolve();
+        }
+      });
+    }),
+    new Promise<void>((resolve) => window.setTimeout(resolve, 1500)),
+  ]);
+  void supabase.removeChannel(temporaryChannel);
+}
+
+export async function secureLogout(broadcastGlobally = false) {
+  if (broadcastGlobally) await broadcastManualLogout();
   wipeLocalCaches();
   try { sessionStorage.clear(); } catch {}
   try { await supabase.auth.signOut(); } catch {}

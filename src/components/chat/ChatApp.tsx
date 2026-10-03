@@ -4,7 +4,7 @@ import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "
 import { listTime } from "@/lib/format";
 import { notify } from "@/lib/tones";
 import { cn } from "@/lib/utils";
-import { secureLogout, useIdleLogout } from "@/lib/security";
+import { secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
 import { AvatarCropper } from "./AvatarCropper";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
@@ -41,6 +41,7 @@ export function ChatApp({ userId }: { userId: string }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileTarget, setProfileTarget] = useState<Profile | null>(null);
   const { left, disabled: idleLogoutDisabled, tapCountdown } = useIdleLogout();
+  useGlobalLogout();
   const photoRef = useRef<HTMLInputElement>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const selRef = useRef<string | null>(null);
@@ -262,12 +263,32 @@ export function ChatApp({ userId }: { userId: string }) {
   const clearUnread = useCallback((id: string) => setUnread((u) => ({ ...u, [id]: 0 })), []);
 
   const askNotify = async () => {
+    const sendTestNotification = async () => {
+      if ("serviceWorker" in navigator) {
+        try {
+          await navigator.serviceWorker.register("/notification-sw.js");
+          await navigator.serviceWorker.ready;
+        } catch (error) {
+          console.error("Could not register the notification service worker:", error);
+        }
+      }
+      const testNotificationSent = await notify(
+        "Notifications enabled",
+        "Browser notifications are ready on this device.",
+      );
+      alert(
+        testNotificationSent
+          ? "Browser notifications are enabled. A test notification was sent to this browser."
+          : "Permission is enabled, but this browser could not display a test notification. Check browser and device notification settings.",
+      );
+    };
+
     if (typeof Notification === "undefined") {
       alert("This browser does not support notifications.");
       return;
     }
     if (Notification.permission === "granted") {
-      alert("Browser notifications are already enabled.");
+      await sendTestNotification();
       return;
     }
     if (Notification.permission === "denied") {
@@ -285,7 +306,9 @@ export function ChatApp({ userId }: { userId: string }) {
 
     try {
       const permission = await Notification.requestPermission();
-      if (permission === "granted") alert("Browser notifications are enabled.");
+      if (permission === "granted") {
+        await sendTestNotification();
+      }
       else if (permission === "denied")
         alert(
           "Browser notifications were blocked. You can change this in your browser's site settings.",
@@ -301,7 +324,7 @@ export function ChatApp({ userId }: { userId: string }) {
     return (
       <div className="app-shell flex flex-col items-center justify-center gap-4 p-6 text-center">
         <p className="max-w-md text-muted-foreground">Your account has no profile yet. Run the setup script (supabase-setup.sql) in the database, then sign in again.</p>
-        <button onClick={() => secureLogout()} className="rounded-lg border px-4 py-2 text-sm text-muted-foreground hover:bg-muted">Log out</button>
+        <button onClick={() => secureLogout(true)} className="rounded-lg border px-4 py-2 text-sm text-muted-foreground hover:bg-muted">Log out</button>
       </div>
     );
   if (!me) return <div className="app-shell flex items-center justify-center text-sm text-muted-foreground">Loading…</div>;
@@ -321,7 +344,7 @@ export function ChatApp({ userId }: { userId: string }) {
             <button type="button" onClick={tapCountdown} className="cursor-pointer select-none rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums hover:bg-primary-foreground/25 sm:px-2 sm:text-xs" aria-label={idleLogoutDisabled ? "Automatic logout is disabled. Click to turn it back on." : `Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}. Click five times to disable it for this session.`} title={idleLogoutDisabled ? "Click to enable automatic logout for this session" : "Click five times to disable automatic logout for this session"}>
               {idleLogoutDisabled ? "OFF" : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`}
             </button>
-            <button onClick={() => secureLogout()} className="flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-destructive px-3 text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
+            <button onClick={() => secureLogout(true)} className="flex h-9 shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-destructive px-3 text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
               <LogOut className="h-4 w-4" />
               <span className="text-xs font-semibold">Log out</span>
             </button>
@@ -351,7 +374,7 @@ export function ChatApp({ userId }: { userId: string }) {
                 {me.avatar_url && <DropdownMenuItem onClick={() => setAvatar(null)}><Trash2 className="mr-2 h-4 w-4" />Remove profile photo</DropdownMenuItem>}
                 <DropdownMenuItem onClick={toggleDark}>{dark ? <Sun className="mr-2 h-4 w-4" /> : <Moon className="mr-2 h-4 w-4" />}{dark ? "Light mode" : "Dark mode"}</DropdownMenuItem>
                 <DropdownMenuItem onClick={askNotify}><Bell className="mr-2 h-4 w-4" />Enable notifications</DropdownMenuItem>
-                <DropdownMenuItem onClick={() => secureLogout()} className="text-muted-foreground focus:text-foreground"><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => secureLogout(true)} className="text-muted-foreground focus:text-foreground"><LogOut className="mr-2 h-4 w-4" />Log out</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
             </div>

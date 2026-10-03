@@ -36,8 +36,27 @@ export function stopRing() {
   ringTimer = null;
 }
 
-export function notify(title: string, body: string) {
-  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  if (document.visibilityState === "visible" && document.hasFocus()) return;
-  try { new Notification(title, { body, icon: "/icon-192.png" }); } catch {}
+export async function notify(title: string, body: string): Promise<boolean> {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return false;
+  const options = { body, icon: "/icon-192.png" };
+
+  try {
+    const registration = "serviceWorker" in navigator
+      ? await navigator.serviceWorker.getRegistration("/")
+      : undefined;
+    if (registration) {
+      await registration.showNotification(title, options);
+      return true;
+    }
+  } catch (error) {
+    console.error("Could not show a service worker notification:", error);
+  }
+
+  try {
+    new Notification(title, options);
+    return true;
+  } catch (error) {
+    console.error("Could not show a browser notification:", error);
+    return false;
+  }
 }

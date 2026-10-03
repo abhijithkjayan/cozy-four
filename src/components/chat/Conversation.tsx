@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X, ZoomIn, ZoomOut } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,58 @@ import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 const PAGE = 30;
+const URL_PATTERN = /https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>"']*)?/gi;
+
+function extractMessageLinks(content: string) {
+  const links: { start: number; end: number; url: string; href: string }[] = [];
+  for (const match of content.matchAll(URL_PATTERN)) {
+    const originalUrl = match[0];
+    if (!originalUrl) continue;
+    let url = originalUrl;
+    while (/[),.!?;:]$/.test(url)) url = url.slice(0, -1);
+    if (!url) continue;
+
+    const start = match.index ?? 0;
+    const hasProtocol = /^https?:\/\//i.test(url);
+    const hasWww = /^www\./i.test(url);
+    const previousCharacter = start > 0 ? content[start - 1] : undefined;
+    if (!hasProtocol && !hasWww && previousCharacter && /[\w@.-]/.test(previousCharacter)) continue;
+
+    const href = hasProtocol ? url : `https://${url}`;
+    try {
+      const parsed = new URL(href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") continue;
+    } catch {
+      continue;
+    }
+    links.push({ start, end: start + url.length, url, href });
+  }
+  return links;
+}
+
+function renderLinkedText(content: string): ReactNode[] {
+  const links = extractMessageLinks(content);
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  links.forEach(({ start, end, url, href }, index) => {
+    if (start > cursor) nodes.push(content.slice(cursor, start));
+    nodes.push(
+      <a
+        key={`link-${index}`}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(event) => event.stopPropagation()}
+        className="break-all text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+      >
+        {url}
+      </a>,
+    );
+    cursor = end;
+  });
+  if (cursor < content.length) nodes.push(content.slice(cursor));
+  return nodes;
+}
 
 export function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
   const [msgs, setMsgs] = useState<Message[]>([]);
@@ -23,6 +75,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [savingEdit, setSavingEdit] = useState(false);
   const [typing, setTyping] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
+  const [viewerZoom, setViewerZoom] = useState(1);
   const [pendingImages, setPendingImages] = useState<{ file: File; previewUrl: string }[]>([]);
   const pendingImageUrls = useRef(new Set<string>());
   const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
@@ -62,6 +115,8 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const pressTimer = useRef<number | undefined>(undefined);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
+
+  useEffect(() => setViewerZoom(1), [viewer]);
 
   useEffect(() => () => pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
@@ -222,8 +277,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const galleryAudio = galleryMessages.filter((message) => message.type === "audio");
   const galleryLinks = galleryMessages.flatMap((message) => {
     if (message.type !== "text" || !message.content) return [];
-    const urls = message.content.match(/https?:\/\/[^\s<>"']+/gi) ?? [];
-    return urls.map((url) => ({ message, url: url.replace(/[),.!?]+$/, "") }));
+    return extractMessageLinks(message.content).map(({ url }) => ({ message, url }));
   });
   const jumpToGalleryMessage = (message: Message) => {
     setGalleryOpen(false);
@@ -713,7 +767,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                         <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
                       </button>
                     ) : (
-                      <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{m.content}</p>
+                      <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
                     )}
                     <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
                       <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
@@ -976,9 +1030,16 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       )}
 
       {viewer && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-call-bg/95 p-4" onClick={() => setViewer(null)}>
-          <button className="absolute right-4 flex h-11 w-11 items-center justify-center rounded-full text-call-fg" style={{ top: "max(1rem, env(safe-area-inset-top))" }} aria-label="Close"><X className="h-6 w-6" /></button>
-          <img src={viewer} alt="Full size" className="max-h-full max-w-full rounded-lg object-contain" />
+        <div className="fixed inset-0 z-40 flex items-center justify-center overflow-hidden bg-call-bg/95 p-4" onClick={() => setViewer(null)}>
+          <button onClick={() => setViewer(null)} className="absolute right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full text-call-fg" style={{ top: "max(1rem, env(safe-area-inset-top))" }} aria-label="Close"><X className="h-6 w-6" /></button>
+          <div className="flex h-full w-full items-center justify-center overflow-hidden" onClick={(event) => event.stopPropagation()}>
+            <img src={viewer} alt="Full size" className="max-h-full max-w-full rounded-lg object-contain transition-transform duration-150" style={{ transform: `scale(${viewerZoom})` }} />
+          </div>
+          <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-background/90 p-1.5 text-foreground shadow-lg" style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom))" }} onClick={(event) => event.stopPropagation()}>
+            <button type="button" onClick={() => setViewerZoom((zoom) => Math.max(1, zoom - 0.5))} disabled={viewerZoom <= 1} className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" aria-label="Zoom out"><ZoomOut className="h-5 w-5" /></button>
+            <span className="min-w-12 text-center text-sm tabular-nums">{Math.round(viewerZoom * 100)}%</span>
+            <button type="button" onClick={() => setViewerZoom((zoom) => Math.min(4, zoom + 0.5))} disabled={viewerZoom >= 4} className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" aria-label="Zoom in"><ZoomIn className="h-5 w-5" /></button>
+          </div>
         </div>
       )}
       {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
