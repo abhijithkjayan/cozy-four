@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import lionLogo from "@/assets/lion-logo.png.asset.json";
+import lionLogo from "@/assets/ontario-logo.jpg.asset.json";
 import { PASSWORD_PAD, supabase, toEmail } from "@/lib/supabase";
 import { ensureAccounts } from "@/lib/accounts.functions";
 
@@ -52,6 +52,7 @@ export function Login() {
       } else setErr("Wrong User ID or password.");
     } else {
       try {
+        sessionStorage.setItem("tab-live", "1");
         localStorage.removeItem("lk-n");
         localStorage.removeItem("lk-until");
       } catch {
@@ -78,10 +79,10 @@ export function Login() {
         <div className="mb-8 flex flex-col items-center gap-3">
           <img
             src={lionLogo.url}
-            alt="Lion's Den logo"
+            alt="Ontario ISP logo"
             className="h-20 w-20 rounded-2xl object-cover"
           />
-          <h1 className="text-xl font-semibold">Lion's Den</h1>
+          <h1 className="text-xl font-semibold">Ontario ISP</h1>
         </div>
         <label className="mb-1 block text-xs font-medium text-muted-foreground">User ID</label>
         <input

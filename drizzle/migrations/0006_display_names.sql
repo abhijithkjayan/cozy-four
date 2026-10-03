@@ -1,0 +1,1 @@
+UPDATE public.profiles SET display_name = CASE user_id WHEN 'jamie' THEN 'Alpha' WHEN 'cersi' THEN 'Beta' WHEN 'tyrion' THEN 'Gamma' WHEN 'tywin' THEN 'Delta' ELSE display_name END WHERE user_id IN ('jamie','cersi','tyrion','tywin');

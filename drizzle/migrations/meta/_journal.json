@@ -43,6 +43,13 @@
       "when": 1790899327339,
       "tag": "0005_reload_schema_cache",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790987148789,
+      "tag": "0006_display_names",
+      "breakpoints": true
     }
   ]
 }

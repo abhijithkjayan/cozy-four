@@ -37,10 +37,32 @@ export function AudioPlayer({ path, duration }: { path: string; duration: number
   const total = duration || 1;
   const pct = Math.min(1, t / total);
 
-  const toggle = () => {
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  useEffect(() => () => { if (blobUrl) URL.revokeObjectURL(blobUrl); }, [blobUrl]);
+
+  // Some browsers refuse the stored file's type; load it locally and retry once.
+  const fallback = async () => {
+    if (!url || blobUrl) return false;
+    try {
+      const b = await (await fetch(url)).blob();
+      const u = URL.createObjectURL(b);
+      setBlobUrl(u);
+      const a = ref.current;
+      if (!a) return false;
+      a.src = u;
+      a.load();
+      await a.play();
+      return true;
+    } catch { return false; }
+  };
+
+  const toggle = async () => {
     const a = ref.current;
     if (!a) return;
-    if (a.paused) a.play(); else a.pause();
+    if (!a.paused) return a.pause();
+    document.querySelectorAll("audio").forEach((o) => { if (o !== a) o.pause(); });
+    try { await a.play(); }
+    catch { if (!(await fallback())) alert("This voice note can't be played on this device."); }
   };
 
   return (

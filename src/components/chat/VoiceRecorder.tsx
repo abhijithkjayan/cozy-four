@@ -16,7 +16,7 @@ export function VoiceRecorder({ onSend }: { onSend: (blob: Blob, secs: number, m
   const begin = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg"].find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
+      const mime = ["audio/mp4", "audio/webm;codecs=opus", "audio/webm", "audio/ogg"].find((m) => MediaRecorder.isTypeSupported(m)) ?? "";
       const r = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       chunks.current = [];
       cancel.current = false;
