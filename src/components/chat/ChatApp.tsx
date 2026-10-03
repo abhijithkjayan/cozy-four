@@ -292,7 +292,7 @@ export function ChatApp({ userId }: { userId: string }) {
         </div>
       )}
       <div className="app-shell flex flex-col overflow-hidden bg-background" onClick={askNotify}>
-        <div className="flex h-8 shrink-0 items-center justify-center bg-primary text-xs font-bold tracking-[0.35em] text-primary-foreground">GOH</div>
+        <div className="flex h-8 shrink-0 items-center justify-center bg-primary text-xs font-bold tracking-[0.35em] text-primary-foreground">CYBER SECURITY WING</div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
         <aside className={cn("flex w-full flex-col border-r bg-card md:w-[360px] md:shrink-0", sel && "hidden md:flex")}>
           <header className="flex h-16 shrink-0 items-center justify-between px-4 pt-[env(safe-area-inset-top)] box-content">
