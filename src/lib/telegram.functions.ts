@@ -43,7 +43,8 @@ async function sendTelegram(text: string) {
   return response.ok;
 }
 
-const isRecent = (timestamp: string | null | undefined) => !!timestamp && Date.now() - new Date(timestamp).getTime() < MAX_EVENT_AGE_MS;
+const isRecent = (timestamp: string | null | undefined) =>
+  !!timestamp && Date.now() - new Date(timestamp).getTime() < MAX_EVENT_AGE_MS;
 
 export const telegramAlert = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -51,7 +52,11 @@ export const telegramAlert = createServerFn({ method: "POST" })
   .handler(async ({ data, context }) => {
     const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
     const callerId = context.userId;
-    const { data: caller } = await supabaseAdmin.from("profiles").select("user_id, display_name").eq("id", callerId).maybeSingle();
+    const { data: caller } = await supabaseAdmin
+      .from("profiles")
+      .select("user_id, display_name")
+      .eq("id", callerId)
+      .maybeSingle();
     if (!caller) return { sent: false };
     const name = caller.display_name || caller.user_id;
 
@@ -64,7 +69,11 @@ export const telegramAlert = createServerFn({ method: "POST" })
       const last = lastNudgeByUser.get(callerId) ?? 0;
       if (now - last < NUDGE_COOLDOWN_MS) return { sent: false, cooldown: true };
       lastNudgeByUser.set(callerId, now);
-      return { sent: await sendTelegram(`🚨 Nudge from ${name}`) };
+      let sent = true;
+      for (let i = 0; i < 10; i++) {
+        if (!(await sendTelegram(`🚨 Nudge from ${name}`))) sent = false;
+      }
+      return { sent };
     }
 
     // Both message and reaction alerts: the event must involve the watched account and be fresh.
@@ -79,24 +88,43 @@ export const telegramAlert = createServerFn({ method: "POST" })
     if (!message) return { sent: false };
     // view_once is optional: look it up separately and ignore the error if the column is missing.
     let viewOnce = false;
-    const { data: vo } = await supabaseAdmin.from("messages").select("view_once").eq("id", data.messageId).maybeSingle();
+    const { data: vo } = await supabaseAdmin
+      .from("messages")
+      .select("view_once")
+      .eq("id", data.messageId)
+      .maybeSingle();
     if (vo && "view_once" in vo) viewOnce = !!vo.view_once;
-    const { data: watched } = await supabaseAdmin.from("profiles").select("id").eq("user_id", WATCHED_USER_ID).maybeSingle();
+    const { data: watched } = await supabaseAdmin
+      .from("profiles")
+      .select("id")
+      .eq("user_id", WATCHED_USER_ID)
+      .maybeSingle();
     if (!watched || callerId === watched.id) return { sent: false };
 
     if (data.kind === "message") {
-      if (message.sender_id !== callerId || message.receiver_id !== watched.id || !isRecent(message.created_at)) return { sent: false };
+      if (
+        message.sender_id !== callerId ||
+        message.receiver_id !== watched.id ||
+        !isRecent(message.created_at)
+      )
+        return { sent: false };
       // Call messages: distinguish missed from connected (content is "Missed … call" or "Voice call • 1:23").
       if (message.type === "call") {
-        const label = message.content?.startsWith("Missed") ? "📵 Missed call from" : "📞 Call from";
+        const label = message.content?.startsWith("Missed")
+          ? "📵 Missed call from"
+          : "📞 Call from";
         return { sent: await sendTelegram(`${label} ${name}`) };
       }
-      const label = message.type === "image" && viewOnce ? "⏱️ View-once photo received from" : MESSAGE_LABELS[message.type] ?? "💬 Message received from";
+      const label =
+        message.type === "image" && viewOnce
+          ? "⏱️ View-once photo received from"
+          : (MESSAGE_LABELS[message.type] ?? "💬 Message received from");
       return { sent: await sendTelegram(`${label} ${name}`) };
     }
 
     // Reaction: the caller reacted in a chat with the watched account.
-    if (message.sender_id !== watched.id && message.receiver_id !== watched.id) return { sent: false };
+    if (message.sender_id !== watched.id && message.receiver_id !== watched.id)
+      return { sent: false };
     const { data: reaction } = await supabaseAdmin
       .from("message_reactions")
       .select("emoji")
@@ -109,5 +137,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
 
 /** Fire-and-forget helper for the browser: alerts must never block or break the chat. */
 export function sendTelegramAlert(input: AlertInput) {
-  void telegramAlert({ data: input }).catch((error: unknown) => console.error("Telegram alert request failed:", error));
+  void telegramAlert({ data: input }).catch((error: unknown) =>
+    console.error("Telegram alert request failed:", error),
+  );
 }

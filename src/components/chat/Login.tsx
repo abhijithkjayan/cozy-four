@@ -106,6 +106,12 @@ export function Login() {
           type="password"
           value={pw}
           onChange={(e) => setPw(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              if (!busy) e.currentTarget.form?.requestSubmit();
+            }
+          }}
           autoComplete="current-password"
           enterKeyHint="go"
           className="mb-5 w-full rounded-lg border bg-background px-3 py-3 text-base outline-none focus:ring-2 focus:ring-ring"
@@ -113,6 +119,7 @@ export function Login() {
         />
         {err && <p className="mb-4 text-sm text-destructive">{err}</p>}
         <button
+          type="submit"
           disabled={busy}
           className="min-h-12 w-full rounded-lg bg-primary py-3 font-medium text-primary-foreground transition hover:opacity-90 disabled:opacity-60"
         >
