@@ -1,5 +1,5 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X, ZoomIn, ZoomOut } from "lucide-react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -12,7 +12,17 @@ import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
 const PAGE = 30;
+const MAX_IMAGE_ZOOM = 5;
 const URL_PATTERN = /https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>"']*)?/gi;
+
+type ImageTransform = { scale: number; x: number; y: number };
+type ImagePointer = { x: number; y: number };
+type ImageGesture = {
+  kind: "pan" | "pinch";
+  start: ImageTransform;
+  startDistance?: number;
+  startMidpoint?: ImagePointer;
+};
 
 function extractMessageLinks(content: string) {
   const links: { start: number; end: number; url: string; href: string }[] = [];
@@ -75,7 +85,11 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [savingEdit, setSavingEdit] = useState(false);
   const [typing, setTyping] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
-  const [viewerZoom, setViewerZoom] = useState(1);
+  const [imageTransform, setImageTransform] = useState<ImageTransform>({ scale: 1, x: 0, y: 0 });
+  const imageViewport = useRef<HTMLDivElement>(null);
+  const imageElement = useRef<HTMLImageElement>(null);
+  const imagePointers = useRef(new Map<number, ImagePointer>());
+  const imageGesture = useRef<ImageGesture | null>(null);
   const [pendingImages, setPendingImages] = useState<{ file: File; previewUrl: string }[]>([]);
   const pendingImageUrls = useRef(new Set<string>());
   const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
@@ -116,7 +130,105 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
 
-  useEffect(() => setViewerZoom(1), [viewer]);
+  useEffect(() => {
+    setImageTransform({ scale: 1, x: 0, y: 0 });
+    imagePointers.current.clear();
+    imageGesture.current = null;
+  }, [viewer]);
+
+  const clampImageTransform = (transform: ImageTransform): ImageTransform => {
+    const viewport = imageViewport.current;
+    const image = imageElement.current;
+    if (!viewport || !image) return transform;
+    const scale = Math.min(MAX_IMAGE_ZOOM, Math.max(1, transform.scale));
+    const maxX = Math.max(0, (image.clientWidth * scale - viewport.clientWidth) / 2);
+    const maxY = Math.max(0, (image.clientHeight * scale - viewport.clientHeight) / 2);
+    return {
+      scale,
+      x: Math.min(maxX, Math.max(-maxX, transform.x)),
+      y: Math.min(maxY, Math.max(-maxY, transform.y)),
+    };
+  };
+
+  const imagePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    imagePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const points = [...imagePointers.current.values()];
+    if (points.length >= 2) {
+      const [first, second] = points;
+      if (!first || !second) return;
+      imageGesture.current = {
+        kind: "pinch",
+        start: imageTransform,
+        startDistance: Math.hypot(second.x - first.x, second.y - first.y),
+        startMidpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+      };
+    } else {
+      imageGesture.current = {
+        kind: "pan",
+        start: imageTransform,
+        startMidpoint: { x: event.clientX, y: event.clientY },
+      };
+    }
+  };
+
+  const imagePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!imagePointers.current.has(event.pointerId)) return;
+    event.preventDefault();
+    imagePointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const gesture = imageGesture.current;
+    if (!gesture) return;
+    const points = [...imagePointers.current.values()];
+
+    if (gesture.kind === "pinch" && points.length >= 2 && gesture.startDistance && gesture.startMidpoint) {
+      const [first, second] = points;
+      if (!first || !second) return;
+      const distance = Math.hypot(second.x - first.x, second.y - first.y);
+      const midpoint = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+      const scale = Math.min(MAX_IMAGE_ZOOM, Math.max(1, gesture.start.scale * distance / gesture.startDistance));
+      const rect = imageViewport.current?.getBoundingClientRect();
+      if (!rect) return;
+      const startCenterX = gesture.startMidpoint.x - (rect.left + rect.width / 2) - gesture.start.x;
+      const startCenterY = gesture.startMidpoint.y - (rect.top + rect.height / 2) - gesture.start.y;
+      const ratio = scale / gesture.start.scale;
+      setImageTransform(clampImageTransform({
+        scale,
+        x: midpoint.x - (rect.left + rect.width / 2) - startCenterX * ratio,
+        y: midpoint.y - (rect.top + rect.height / 2) - startCenterY * ratio,
+      }));
+    } else if (points.length === 1 && gesture.start.scale > 1 && gesture.startMidpoint) {
+      const point = points[0];
+      if (!point) return;
+      setImageTransform(clampImageTransform({
+        ...gesture.start,
+        x: gesture.start.x + point.x - gesture.startMidpoint.x,
+        y: gesture.start.y + point.y - gesture.startMidpoint.y,
+      }));
+    }
+  };
+
+  const imagePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    imagePointers.current.delete(event.pointerId);
+    const remaining = [...imagePointers.current.values()];
+    if (remaining.length >= 2) {
+      const first = remaining[0];
+      const second = remaining[1];
+      if (first && second) {
+        imageGesture.current = {
+          kind: "pinch",
+          start: imageTransform,
+          startDistance: Math.hypot(second.x - first.x, second.y - first.y),
+          startMidpoint: { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 },
+        };
+      }
+    } else if (remaining.length === 1) {
+      const point = remaining[0];
+      if (point) imageGesture.current = { kind: "pan", start: imageTransform, startMidpoint: point };
+    } else {
+      imageGesture.current = null;
+    }
+  };
 
   useEffect(() => () => pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
@@ -1032,13 +1144,27 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       {viewer && (
         <div className="fixed inset-0 z-40 flex items-center justify-center overflow-hidden bg-call-bg/95 p-4" onClick={() => setViewer(null)}>
           <button onClick={() => setViewer(null)} className="absolute right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full text-call-fg" style={{ top: "max(1rem, env(safe-area-inset-top))" }} aria-label="Close"><X className="h-6 w-6" /></button>
-          <div className="flex h-full w-full items-center justify-center overflow-hidden" onClick={(event) => event.stopPropagation()}>
-            <img src={viewer} alt="Full size" className="max-h-full max-w-full rounded-lg object-contain transition-transform duration-150" style={{ transform: `scale(${viewerZoom})` }} />
-          </div>
-          <div className="absolute bottom-5 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 rounded-full bg-background/90 p-1.5 text-foreground shadow-lg" style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom))" }} onClick={(event) => event.stopPropagation()}>
-            <button type="button" onClick={() => setViewerZoom((zoom) => Math.max(1, zoom - 0.5))} disabled={viewerZoom <= 1} className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" aria-label="Zoom out"><ZoomOut className="h-5 w-5" /></button>
-            <span className="min-w-12 text-center text-sm tabular-nums">{Math.round(viewerZoom * 100)}%</span>
-            <button type="button" onClick={() => setViewerZoom((zoom) => Math.min(4, zoom + 0.5))} disabled={viewerZoom >= 4} className="flex h-10 w-10 items-center justify-center rounded-full hover:bg-muted disabled:opacity-40" aria-label="Zoom in"><ZoomIn className="h-5 w-5" /></button>
+          <div
+            ref={imageViewport}
+            className="flex h-full w-full touch-none select-none items-center justify-center overflow-hidden"
+            onClick={(event) => event.stopPropagation()}
+            onPointerDown={imagePointerDown}
+            onPointerMove={imagePointerMove}
+            onPointerUp={imagePointerUp}
+            onPointerCancel={imagePointerUp}
+          >
+            <img
+              ref={imageElement}
+              src={viewer}
+              alt="Full size"
+              draggable={false}
+              className="max-h-full max-w-full rounded-lg object-contain"
+              style={{
+                transform: `translate3d(${imageTransform.x}px, ${imageTransform.y}px, 0) scale(${imageTransform.scale})`,
+                transformOrigin: "center",
+                pointerEvents: "none",
+              }}
+            />
           </div>
         </div>
       )}
