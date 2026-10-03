@@ -46,6 +46,8 @@ export function ChatApp({ userId }: { userId: string }) {
   const [photoBusy, setPhotoBusy] = useState(false);
   const selRef = useRef<string | null>(null);
   selRef.current = sel;
+  const allRef = useRef(all);
+  allRef.current = all;
 
   const setAvatar = async (url: string | null) => {
     if (!me) return;
@@ -224,30 +226,39 @@ export function ChatApp({ userId }: { userId: string }) {
   // Message stream
   useEffect(() => {
     if (!me) return;
+    const meId = me.id;
     const onChange = (m: Message, isInsert: boolean) => {
+      if (m.sender_id !== meId && m.receiver_id !== meId) return;
       emitMsg(m);
-      const peer = m.sender_id === me.id ? m.receiver_id : m.sender_id;
+      const peer = m.sender_id === meId ? m.receiver_id : m.sender_id;
       setLast((l) => {
         const cur = l[peer];
         if (m.deleted_for?.includes(me.id)) return cur?.id === m.id ? { ...l, [peer]: undefined } : l;
         if (!cur || cur.id === m.id || new Date(m.created_at) >= new Date(cur.created_at)) return { ...l, [peer]: m };
         return l;
       });
-      if (isInsert && m.receiver_id === me.id) {
+      if (isInsert && m.receiver_id === meId) {
         if (m.status === "sent") supabase.from("messages").update({ status: "delivered" }).eq("id", m.id).eq("status", "sent").then();
         const visible = selRef.current === peer && document.visibilityState === "visible";
         if (!visible && m.type !== "call") {
           setUnread((u) => ({ ...u, [peer]: (u[peer] ?? 0) + 1 }));
-          const who = all.find((p) => p.id === peer)?.display_name ?? "New message";
-          notify(who, preview(m, me.id));
+          const who = allRef.current.find((p) => p.id === peer)?.display_name ?? "New message";
+          notify(who, preview(m, meId));
         }
       }
     };
     const ch = supabase
-      .channel("messages-" + me.id)
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `receiver_id=eq.${me.id}` }, (p) => p.new && onChange(p.new as Message, p.eventType === "INSERT"))
-      .on("postgres_changes", { event: "*", schema: "public", table: "messages", filter: `sender_id=eq.${me.id}` }, (p) => p.new && onChange(p.new as Message, p.eventType === "INSERT"))
-      .subscribe();
+      .channel("messages-" + meId)
+      .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
+        if (payload.new && typeof payload.new === "object" && "id" in payload.new) {
+          onChange(payload.new as Message, payload.eventType === "INSERT");
+        }
+      })
+      .subscribe((status, error) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error("Message realtime subscription failed:", status, error);
+        }
+      });
     const onLocal = (e: Event) => {
       const m = (e as CustomEvent<Message>).detail;
       const peer = m.sender_id === me.id ? m.receiver_id : m.sender_id;
@@ -258,7 +269,7 @@ export function ChatApp({ userId }: { userId: string }) {
       supabase.removeChannel(ch);
       bus.removeEventListener("msg", onLocal);
     };
-  }, [me, all]);
+  }, [me?.id]);
 
   const clearUnread = useCallback((id: string) => setUnread((u) => ({ ...u, [id]: 0 })), []);
 
