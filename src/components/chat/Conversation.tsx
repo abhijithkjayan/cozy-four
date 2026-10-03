@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Phone, PhoneMissed, Reply, Send, Sticker, Trash2, Video, X } from "lucide-react";
-import { supabase, type Message, type Profile, bus, emitMsg, pairFilter } from "@/lib/supabase";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
+import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
@@ -19,8 +19,19 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [loading, setLoading] = useState(false);
   const [text, setText] = useState("");
   const [reply, setReply] = useState<Message | null>(null);
+  const [editing, setEditing] = useState<Message | null>(null);
+  const [savingEdit, setSavingEdit] = useState(false);
   const [typing, setTyping] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
+  const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`played-audio:${me.id}`);
+      return new Set(saved ? JSON.parse(saved) as string[] : []);
+    } catch {
+      return new Set();
+    }
+  });
+  const playedAudioRef = useRef(playedAudio);
   const [uploading, setUploading] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const keepBottom = useRef(true);
@@ -36,6 +47,12 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [giphyOpen, setGiphyOpen] = useState(false);
   const [contacts, setContacts] = useState<Profile[]>([]);
   const [busyOp, setBusyOp] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<Message[]>([]);
+  const [searching, setSearching] = useState(false);
+  const messageElements = useRef(new Map<string, HTMLDivElement>());
+  const pendingScrollId = useRef<string | null>(null);
   const pressTimer = useRef<number | undefined>(undefined);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
@@ -101,6 +118,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   useLayoutEffect(() => {
     const el = scroller.current;
     if (!el) return;
+    if (pendingScrollId.current) {
+      messageElements.current.get(pendingScrollId.current)?.scrollIntoView({ block: "center" });
+      pendingScrollId.current = null;
+      prevHeight.current = null;
+      keepBottom.current = false;
+      return;
+    }
     if (prevHeight.current !== null) {
       el.scrollTop = el.scrollHeight - prevHeight.current;
       prevHeight.current = null;
@@ -110,6 +134,48 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const onScroll = () => {
     const el = scroller.current;
     if (el && el.scrollTop < 60 && hasMore && !loading && msgs.length) load(msgs[0]!.created_at);
+  };
+
+  const searchMessages = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const term = searchQuery.trim();
+    if (!term) {
+      setSearchResults([]);
+      return;
+    }
+    setSearching(true);
+    const pattern = `%${term.replace(/[\\%_]/g, "\\$&")}%`;
+    const { data, error } = await supabase
+      .from("messages")
+      .select("*")
+      .or(pairFilter(me.id, peer.id))
+      .ilike("content", pattern)
+      .not("deleted_for", "cs", `{${me.id}}`)
+      .eq("deleted_for_everyone", false)
+      .neq("type", "call")
+      .order("created_at", { ascending: false })
+      .limit(50);
+    setSearching(false);
+    if (error) {
+      alert("Could not search this chat. Please try again.");
+      return;
+    }
+    setSearchResults((data ?? []) as Message[]);
+  };
+
+  const openSearchResult = (message: Message) => {
+    if (msgs.some((item) => item.id === message.id)) {
+      messageElements.current.get(message.id)?.scrollIntoView({ block: "center" });
+      setSearchOpen(false);
+      return;
+    }
+    keepBottom.current = false;
+    pendingScrollId.current = message.id;
+    setMsgs((current) => {
+      const next = current.some((item) => item.id === message.id) ? current : [...current, message];
+      return next.sort((a, b) => a.created_at.localeCompare(b.created_at));
+    });
+    setSearchOpen(false);
   };
 
   const onType = (v: string) => {
@@ -131,8 +197,34 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const sendText = () => {
     const t = text.trim();
     if (!t) return;
+    if (editing) {
+      void saveEdit(t);
+      return;
+    }
     setText("");
     insert({ type: "text", content: t });
+  };
+
+  const saveEdit = async (content: string) => {
+    if (!editing || content === editing.content) {
+      setEditing(null);
+      setText("");
+      return;
+    }
+    setSavingEdit(true);
+    const { data, error } = await supabase
+      .from("messages")
+      .update({ content })
+      .eq("id", editing.id)
+      .eq("sender_id", me.id)
+      .select()
+      .single();
+    setSavingEdit(false);
+    if (error) return alert("Could not edit this message. Please try again.");
+    setMsgs((list) => list.map((message) => (message.id === editing.id ? (data as Message) : message)));
+    emitMsg(data as Message);
+    setEditing(null);
+    setText("");
   };
 
   const upload = async (blob: Blob, ext: string) => {
@@ -158,54 +250,94 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     if (path) insert({ type: "audio", media_url: path, content: String(Math.round(secs)) });
   };
 
-  const sendLocation = () => {
-    if (!navigator.geolocation) return alert("Location is not available in this browser.");
-    setUploading(true);
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        setUploading(false);
-        insert({ type: "location", content: JSON.stringify({ lat: coords.latitude, lng: coords.longitude, mapsUrl: `https://www.google.com/maps?q=${coords.latitude},${coords.longitude}` }) });
-      },
-      () => { setUploading(false); alert("Could not get your location. Please allow location access and try again."); },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
-    );
-  };
-
   const sendGiphy = (kind: "gif" | "sticker", item: { url: string; preview: string; title: string }) => {
     setGiphyOpen(false);
     insert({ type: kind, content: JSON.stringify(item) });
   };
 
+  const getAttachmentFile = async (message: Message, url?: string, title?: string) => {
+    let blob: Blob;
+    let filename: string;
+    if (message.media_url) {
+      const { data, error } = await supabase.storage.from("chat-media").download(message.media_url);
+      if (error || !data) throw error ?? new Error("Attachment not found");
+      blob = data;
+      filename = decodeURIComponent(message.media_url.split("/").pop() || `attachment-${message.id}`);
+    } else if (url) {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error("Download failed");
+      blob = await response.blob();
+      const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1] || "gif";
+      filename = title?.trim().replace(/[\\/:*?"<>|]/g, "_") || `attachment-${message.id}`;
+      if (!/\.[a-z0-9]{2,5}$/i.test(filename)) filename += `.${extension}`;
+    } else {
+      throw new Error("Attachment not found");
+    }
+    return new File([blob], filename, { type: blob.type || "application/octet-stream" });
+  };
+
+  const saveFile = (file: File) => {
+    const objectUrl = URL.createObjectURL(file);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = file.name;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  };
+
   const downloadAttachment = async (message: Message, url?: string, title?: string) => {
     try {
-      let blob: Blob;
-      let filename: string;
-      if (message.media_url) {
-        const { data, error } = await supabase.storage.from("chat-media").download(message.media_url);
-        if (error || !data) throw error ?? new Error("Attachment not found");
-        blob = data;
-        filename = decodeURIComponent(message.media_url.split("/").pop() || `attachment-${message.id}`);
-      } else if (url) {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error("Download failed");
-        blob = await response.blob();
-        const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1] || "gif";
-        filename = title?.trim().replace(/[\\/:*?"<>|]/g, "_") || `attachment-${message.id}`;
-        if (!/\.[a-z0-9]{2,5}$/i.test(filename)) filename += `.${extension}`;
-      } else {
-        return;
-      }
-
-      const objectUrl = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = filename;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      saveFile(await getAttachmentFile(message, url, title));
     } catch {
       alert("Could not download this attachment. Please try again.");
+    }
+  };
+
+  const shareAttachment = async (message: Message, url?: string, title?: string) => {
+    try {
+      const file = await getAttachmentFile(message, url, title);
+      if (typeof navigator.share !== "function") {
+        saveFile(file);
+        return;
+      }
+      const shareData = { files: [file], title: title || file.name };
+      if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
+        saveFile(file);
+        return;
+      }
+      await navigator.share(shareData);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      if (error instanceof TypeError) {
+        try {
+          saveFile(await getAttachmentFile(message, url, title));
+          return;
+        } catch {
+          alert("Could not share or save this attachment. Please try again.");
+          return;
+        }
+      }
+      alert("Could not share this attachment. Please try again.");
+    }
+  };
+
+  const viewImage = async (message: Message) => {
+    if (!message.media_url) return;
+    const url = await signedUrl(message.media_url);
+    if (!url) return alert("Could not open this image. Please try again.");
+    setViewer(url);
+  };
+  const markAudioPlayed = (id: string) => {
+    if (playedAudioRef.current.has(id)) return;
+    const next = new Set(playedAudioRef.current).add(id);
+    playedAudioRef.current = next;
+    setPlayedAudio(next);
+    try {
+      localStorage.setItem(`played-audio:${me.id}`, JSON.stringify([...next]));
+    } catch {
+      alert("Voice note played, but its played status could not be saved on this device.");
     }
   };
 
@@ -239,7 +371,26 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     }
     return true;
   };
-  const doClear = async () => {
+  const hideForEveryone = async (rows: { id: string; sender_id: string; receiver_id: string; deleted_for: string[] | null }[]) => {
+    for (let i = 0; i < rows.length; i += 15) {
+      const results = await Promise.all(
+        rows.slice(i, i + 15).map((r) =>
+          supabase
+            .from("messages")
+            .update({
+              deleted_for: [...new Set([...(r.deleted_for ?? []), r.sender_id, r.receiver_id])],
+              deleted_for_everyone: true,
+              content: null,
+              media_url: null,
+            })
+            .eq("id", r.id),
+        ),
+      );
+      if (results.some((r) => r.error)) return false;
+    }
+    return true;
+  };
+  const doClearForMe = async () => {
     setBusyOp(true);
     const { data, error } = await supabase.from("messages").select("id, deleted_for").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`);
     const ok = !error && (await hideForMe((data ?? []) as { id: string; deleted_for: string[] | null }[]));
@@ -247,6 +398,27 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     if (!ok) return alert("Could not clear chat. Please try again.");
     markDeletedLocally(new Set((data ?? []).map((r) => r.id as string)));
     setMsgs((l) => l.map((m) => (m.deleted_for?.includes(me.id) ? m : { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] })));
+    setConfirm(null);
+    setSel(null);
+  };
+  const doClearForEveryone = async () => {
+    setBusyOp(true);
+    const { data, error } = await supabase
+      .from("messages")
+      .select("id, sender_id, receiver_id, deleted_for")
+      .or(pairFilter(me.id, peer.id));
+    const ok = !error && (await hideForEveryone((data ?? []) as { id: string; sender_id: string; receiver_id: string; deleted_for: string[] | null }[]));
+    setBusyOp(false);
+    if (!ok) return alert("Could not clear chat for everyone. Please try again.");
+    setMsgs((list) =>
+      list.map((m) => ({
+        ...m,
+        deleted_for: [...new Set([...(m.deleted_for ?? []), me.id, peer.id])],
+        deleted_for_everyone: true,
+        content: null,
+        media_url: null,
+      })),
+    );
     setConfirm(null);
     setSel(null);
   };
@@ -323,6 +495,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
         <DropdownMenu>
           <DropdownMenuTrigger className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Chat menu"><MoreVertical className="h-5 w-5" /></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => { setSearchQuery(""); setSearchResults([]); setSearchOpen(true); }}><Search className="mr-2 h-4 w-4" />Search messages</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setSel(new Set())}><ListChecks className="mr-2 h-4 w-4" />Select messages</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setConfirm("clear")} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Clear chat</DropdownMenuItem>
           </DropdownMenuContent>
@@ -337,6 +510,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           const mine = m.sender_id === me.id;
           const rep = m.reply_to ? byId.get(m.reply_to) : undefined;
           const attachment = parseAttachment(m.content);
+          if (m.type === "call" && m.deleted_for_everyone) return null;
           return (
             <Fragment key={m.id}>
               {newDay && (
@@ -345,15 +519,26 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                 </div>
               )}
               {m.type === "call" ? (
-                <div className={cn("my-2 flex items-center justify-center gap-2", sel?.has(m.id) && "bg-primary/10")} onClick={sel ? () => toggleSel(m.id) : undefined}>
+                <div ref={(element) => { if (element) messageElements.current.set(m.id, element); else messageElements.current.delete(m.id); }} className={cn("group my-2 flex items-center justify-center gap-2", sel?.has(m.id) && "bg-primary/10")} onClick={sel ? () => toggleSel(m.id) : undefined}>
                   {sel && <Tick on={sel.has(m.id)} />}
                   <span className={cn("flex items-center gap-2 rounded-lg bg-card px-3 py-1.5 text-xs shadow-sm", m.content?.startsWith("Missed") && "text-destructive")}>
                     {m.content?.startsWith("Missed") ? <PhoneMissed className="h-3.5 w-3.5" /> : m.content?.startsWith("Video") ? <Video className="h-3.5 w-3.5" /> : <Phone className="h-3.5 w-3.5" />}
                     {m.content} · {fmtTime(m.created_at)}
                   </span>
+                  {!sel && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger onClick={(event) => event.stopPropagation()} className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 hover:bg-muted group-hover:opacity-100 focus:opacity-100 max-md:opacity-60" aria-label="Call entry options">
+                        <ChevronDown className="h-4 w-4" />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="center">
+                        <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </div>
               ) : (
                 <div
+                  ref={(element) => { if (element) messageElements.current.set(m.id, element); else messageElements.current.delete(m.id); }}
                   className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", sel?.has(m.id) && "bg-primary/10", sel && "cursor-pointer")}
                   onClick={sel ? () => toggleSel(m.id) : undefined}
                   onPointerDown={!sel && !m.deleted_for_everyone ? () => { pressTimer.current = window.setTimeout(() => startSel(m.id), 500); } : undefined}
@@ -370,7 +555,10 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                           <ChevronDown className="h-4 w-4" />
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align={mine ? "end" : "start"}>
-                          <DropdownMenuItem onClick={() => setReply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
+                          {mine && m.type === "text" && <DropdownMenuItem onClick={() => { setReply(null); setEditing(m); setText(m.content ?? ""); }}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
+                          {m.type === "image" && m.media_url && <DropdownMenuItem onClick={() => void viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
+                          {(m.media_url || attachment?.url) && <DropdownMenuItem onClick={() => void shareAttachment(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
                           {(m.media_url || attachment?.url) && <DropdownMenuItem onClick={() => void downloadAttachment(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
                           <DropdownMenuItem onClick={() => startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                           <DropdownMenuItem onClick={() => deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
@@ -389,7 +577,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                     ) : m.type === "image" && m.media_url ? (
                       <ImageThumb path={m.media_url} onOpen={setViewer} />
                     ) : m.type === "audio" && m.media_url ? (
-                      <AudioPlayer path={m.media_url} duration={Number(m.content) || 0} />
+                      <AudioPlayer path={m.media_url} duration={Number(m.content) || 0} played={playedAudio.has(m.id)} onPlayed={() => markAudioPlayed(m.id)} />
                     ) : m.type === "location" && attachment?.mapsUrl ? (
                       <a href={attachment.mapsUrl} target="_blank" rel="noreferrer" className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
                         <MapPin className="h-5 w-5 shrink-0 text-primary" />
@@ -421,13 +609,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
         )}
       </div>
 
-      {reply && (
+      {(reply || editing) && (
         <div className="flex items-center gap-2 border-t bg-card px-3 py-2">
           <div className="min-w-0 flex-1 rounded-md border-l-4 border-primary bg-muted px-2 py-1 text-xs">
-            <div className="font-medium text-primary">{reply.sender_id === me.id ? "You" : peer.display_name}</div>
-            <div className="truncate text-muted-foreground">{preview(reply, "")}</div>
+            <div className="font-medium text-primary">{editing ? "Editing message" : reply!.sender_id === me.id ? "You" : peer.display_name}</div>
+            <div className="truncate text-muted-foreground">{editing ? editing.content : preview(reply!, "")}</div>
           </div>
-          <button onClick={() => setReply(null)} className="p-1 text-muted-foreground" aria-label="Cancel reply"><X className="h-4 w-4" /></button>
+          <button onClick={() => { setReply(null); setEditing(null); setText(""); }} className="p-1 text-muted-foreground" aria-label="Cancel reply or edit"><X className="h-4 w-4" /></button>
         </div>
       )}
 
@@ -437,9 +625,6 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           <>
             <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
               <ImageIcon className="h-5 w-5" />
-            </button>
-            <button onClick={sendLocation} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send current location">
-              <MapPin className="h-5 w-5" />
             </button>
             <button onClick={() => setGiphyOpen(true)} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send GIF or sticker">
               <Sticker className="h-5 w-5" />
@@ -462,8 +647,8 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           className="max-h-32 min-h-11 flex-1 resize-none rounded-3xl border-0 bg-card px-4 py-2.5 text-base leading-snug shadow-sm outline-none"
         />
         {text.trim() ? (
-          <button onClick={sendText} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground" aria-label="Send">
-            <Send className="h-5 w-5" />
+          <button disabled={savingEdit} onClick={sendText} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50" aria-label={editing ? "Save edit" : "Send"}>
+            {editing ? <Check className="h-5 w-5" /> : <Send className="h-5 w-5" />}
           </button>
         ) : (
           <VoiceRecorder onSend={sendVoice} />
@@ -475,10 +660,11 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           {confirm === "clear" ? (
             <>
               <h3 className="text-base font-semibold">Clear this chat?</h3>
-              <p className="mt-1 text-sm text-muted-foreground">All messages will be removed for you. {peer.display_name} will still have them.</p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button disabled={busyOp} onClick={() => setConfirm(null)} className="rounded-lg px-4 py-2 text-sm">Cancel</button>
-                <button disabled={busyOp} onClick={doClear} className="rounded-lg bg-destructive px-4 py-2 text-sm font-medium text-white disabled:opacity-60">{busyOp ? "Clearing…" : "Clear chat"}</button>
+              <p className="mt-1 text-sm text-muted-foreground">Choose whether to clear messages just for you or for both of you.</p>
+              <div className="mt-5 flex flex-col gap-2">
+                <button disabled={busyOp} onClick={doClearForMe} className="rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60">{busyOp ? "Clearing…" : "Clear chat for me"}</button>
+                <button disabled={busyOp} onClick={doClearForEveryone} className="rounded-lg border border-destructive px-4 py-2.5 text-sm font-medium text-destructive disabled:opacity-60">{busyOp ? "Clearing…" : "Clear chat for everyone"}</button>
+                <button disabled={busyOp} onClick={() => setConfirm(null)} className="rounded-lg px-4 py-2 text-sm text-muted-foreground">Cancel</button>
               </div>
             </>
           ) : (
@@ -491,6 +677,41 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
               </div>
             </>
           )}
+        </Modal>
+      )}
+
+      {searchOpen && (
+        <Modal onClose={() => !searching && setSearchOpen(false)}>
+          <h3 className="text-base font-semibold">Search this chat</h3>
+          <form onSubmit={(event) => void searchMessages(event)} className="mt-3 flex gap-2">
+            <input
+              autoFocus
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search messages"
+              aria-label="Search messages"
+              className="min-w-0 flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring"
+            />
+            <button type="submit" disabled={searching || !searchQuery.trim()} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50">
+              {searching ? "Searching…" : "Search"}
+            </button>
+          </form>
+          <ul className="mt-3 max-h-72 divide-y overflow-y-auto">
+            {searchResults.map((message) => (
+              <li key={message.id}>
+                <button type="button" onClick={() => openSearchResult(message)} className="w-full px-2 py-2.5 text-left hover:bg-muted">
+                  <span className="flex items-center justify-between gap-2 text-xs">
+                    <span className="font-medium">{message.sender_id === me.id ? "You" : peer.display_name}</span>
+                    <span className="shrink-0 text-muted-foreground">{fmtTime(message.created_at)}</span>
+                  </span>
+                  <span className="mt-1 block whitespace-pre-wrap break-words text-sm text-muted-foreground">{message.content}</span>
+                </button>
+              </li>
+            ))}
+            {!searching && searchQuery.trim() && searchResults.length === 0 && <li className="px-2 py-4 text-center text-sm text-muted-foreground">No matching messages found.</li>}
+          </ul>
+          {searchResults.length === 50 && <p className="mt-2 text-center text-xs text-muted-foreground">Showing the 50 most recent matches.</p>}
+          <button type="button" disabled={searching} onClick={() => setSearchOpen(false)} className="mt-3 w-full rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-50">Close</button>
         </Modal>
       )}
 

@@ -40,7 +40,7 @@ export function ChatApp({ userId }: { userId: string }) {
   const [listView, setListView] = useState<"chats" | "calls">("chats");
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileTarget, setProfileTarget] = useState<Profile | null>(null);
-  const { left, stay } = useIdleLogout();
+  const { left } = useIdleLogout();
   const photoRef = useRef<HTMLInputElement>(null);
   const [photoBusy, setPhotoBusy] = useState(false);
   const selRef = useRef<string | null>(null);
@@ -285,12 +285,6 @@ export function ChatApp({ userId }: { userId: string }) {
 
   return (
     <CallProvider me={me} profiles={all}>
-      {left !== null && (
-        <div className="fixed bottom-4 right-4 z-[60] flex max-w-[calc(100vw-2rem)] items-center gap-3 rounded-xl bg-foreground px-4 py-3 text-sm text-background shadow-xl">
-          <span>Logging out in <strong>{left}s</strong> because you were inactive.</span>
-          <button onClick={stay} className="shrink-0 rounded-md bg-background px-3 py-1 font-medium text-foreground">Stay signed in</button>
-        </div>
-      )}
       <div className="app-shell flex flex-col overflow-hidden bg-background" onClick={askNotify}>
         <div className="flex h-8 shrink-0 items-center justify-center bg-primary text-xs font-bold tracking-[0.35em] text-primary-foreground">CYBER SECURITY WING</div>
         <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -308,6 +302,7 @@ export function ChatApp({ userId }: { userId: string }) {
               <AvatarCropper file={cropFile} onCancel={() => setCropFile(null)} onDone={(url) => { setCropFile(null); void setAvatar(url); }} />
             </div>
             <div className="flex items-center gap-1">
+              {left !== null && <span className="rounded-md bg-muted px-1.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground sm:px-2 sm:text-xs" aria-label={`Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`} title="Automatic logout countdown">{Math.floor(left / 60)}:{String(left % 60).padStart(2, "0")}</span>}
               <button onClick={() => secureLogout()} className="flex items-center gap-1.5 rounded-lg bg-destructive px-3 py-2 text-xs font-semibold text-destructive-foreground shadow-sm hover:opacity-90" aria-label="Log out">
                 <LogOut className="h-4 w-4" />
                 <span>Log out</span>

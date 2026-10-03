@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import { supabase, wipeLocalCaches } from "@/lib/supabase";
 
 export const IDLE_LIMIT_MS = 60 * 1000; // auto logout after 1 minute of no activity
-const WARN_MS = 15 * 1000;
 
 // Set paused=true while a call is running so a long call is not cut off.
 export const idleState = { paused: false };
@@ -14,7 +13,7 @@ export async function secureLogout() {
   try { if ("Notification" in window) (navigator as any).serviceWorker?.getRegistrations?.().then((r: any[]) => r.forEach((x) => x.unregister())); } catch {}
 }
 
-/** Logs the user out after 1 min without touching the app. Returns seconds left during the final warning window. */
+/** Logs the user out after 1 min without touching the app. Returns the seconds remaining. */
 export function useIdleLogout() {
   const last = useRef(Date.now());
   const [left, setLeft] = useState<number | null>(null);
@@ -32,7 +31,7 @@ export function useIdleLogout() {
       if (idleState.paused) { mark(); setLeft(null); return; }
       const idle = Date.now() - last.current;
       if (idle >= IDLE_LIMIT_MS) { secureLogout(); return; }
-      setLeft(idle >= IDLE_LIMIT_MS - WARN_MS ? Math.ceil((IDLE_LIMIT_MS - idle) / 1000) : null);
+      setLeft(Math.ceil((IDLE_LIMIT_MS - idle) / 1000));
     };
     const t = setInterval(check, 1000);
     // Timers are paused in background tabs, so re-check the moment the user comes back

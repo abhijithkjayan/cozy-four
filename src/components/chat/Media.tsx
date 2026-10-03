@@ -28,7 +28,7 @@ export function ImageThumb({ path, onOpen }: { path: string; onOpen: (url: strin
   );
 }
 
-export function AudioPlayer({ path, duration }: { path: string; duration: number }) {
+export function AudioPlayer({ path, duration, played, onPlayed }: { path: string; duration: number; played: boolean; onPlayed: () => void }) {
   const url = useSigned(path);
   const ref = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -71,7 +71,7 @@ export function AudioPlayer({ path, duration }: { path: string; duration: number
         ref={ref}
         src={url ?? undefined}
         preload="metadata"
-        onPlay={() => setPlaying(true)}
+        onPlay={() => { setPlaying(true); onPlayed(); }}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setT(0); }}
         onTimeUpdate={(e) => setT(e.currentTarget.currentTime)}
@@ -79,7 +79,7 @@ export function AudioPlayer({ path, duration }: { path: string; duration: number
       <button
         onClick={toggle}
         disabled={!url}
-        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground"
+        className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-primary-foreground ${played ? "bg-tick-read" : "bg-primary"}`}
         aria-label={playing ? "Pause" : "Play"}
       >
         {playing ? <Pause className="h-4 w-4" /> : <Play className="ml-0.5 h-4 w-4" />}
@@ -95,7 +95,7 @@ export function AudioPlayer({ path, duration }: { path: string; duration: number
           {bars.current.map((h, i) => (
             <span
               key={i}
-              className={i / bars.current.length < pct ? "bg-primary" : "bg-muted-foreground/35"}
+              className={i / bars.current.length < pct ? (played ? "bg-tick-read" : "bg-primary") : "bg-muted-foreground/35"}
               style={{ height: `${h * 100}%`, width: 3, borderRadius: 2 }}
             />
           ))}
