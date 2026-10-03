@@ -101,6 +101,8 @@ export type Database = {
           sender_id: string
           status: string
           type: string
+          view_once: boolean
+          view_once_opened_at: string | null
         }
         Insert: {
           content?: string | null
@@ -114,6 +116,8 @@ export type Database = {
           sender_id: string
           status?: string
           type?: string
+          view_once?: boolean
+          view_once_opened_at?: string | null
         }
         Update: {
           content?: string | null
@@ -127,6 +131,8 @@ export type Database = {
           sender_id?: string
           status?: string
           type?: string
+          view_once?: boolean
+          view_once_opened_at?: string | null
         }
         Relationships: [
           {
@@ -223,7 +229,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      open_view_once_message: {
+        Args: { p_message_id: string }
+        Returns: string | null
+      }
     }
     Enums: {
       [_ in never]: never

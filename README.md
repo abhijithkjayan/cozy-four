@@ -42,6 +42,7 @@ DATABASE & STORAGE (with Row Level Security)
 - messages: id, sender_id, receiver_id, type (text/image/audio/call), content, media_url, reply_to, status (sent/delivered/read), created_at, deleted_for (array/jsonb), deleted_for_everyone (bool)
 - calls: id, caller_id, receiver_id, type, status, started_at, ended_at
 - Storage bucket "chat-media" with policies limiting access to chat participants.
+- Before using view-once photos, apply `drizzle/migrations/0007_view_once_media.sql` to the connected Supabase database.
 
 DESIGN & PWA
 - Minimal, clean, neutral light theme with soft WhatsApp green accents and dark mode support.

@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, ListChecks, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -23,6 +23,8 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const [savingEdit, setSavingEdit] = useState(false);
   const [typing, setTyping] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<{ file: File; previewUrl: string }[]>([]);
+  const pendingImageUrls = useRef(new Set<string>());
   const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
     try {
       const saved = localStorage.getItem(`played-audio:${me.id}`);
@@ -56,6 +58,8 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const pressTimer = useRef<number | undefined>(undefined);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
+
+  useEffect(() => () => pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url)), []);
 
   const markRead = useCallback(() => {
     if (document.visibilityState !== "visible") return;
@@ -189,9 +193,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
   const insert = async (row: Partial<Message>) => {
     keepBottom.current = true;
     const { data, error } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: peer.id, reply_to: reply?.id ?? null, ...row }).select().single();
-    if (error) return alert("Message failed to send.");
+    if (error) {
+      alert("Message failed to send.");
+      return false;
+    }
     setReply(null);
     emitMsg(data as Message);
+    return true;
   };
 
   const sendText = () => {
@@ -234,13 +242,40 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     return path;
   };
 
-  const sendImages = async (files: File[]) => {
+  const cancelPendingImages = () => {
+    pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    pendingImageUrls.current.clear();
+    setPendingImages([]);
+  };
+
+  const chooseImages = (files: File[]) => {
+    cancelPendingImages();
+    const selected = files.slice(0, 20).map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      pendingImageUrls.current.add(previewUrl);
+      return { file, previewUrl };
+    });
+    setPendingImages(selected);
+  };
+
+  const sendImages = async (viewOnce: boolean) => {
+    const selected = [...pendingImages];
+    if (!selected.length) return;
     setUploading(true);
-    for (const f of files) {
-      const path = await upload(f, f.name.split(".").pop() || "jpg");
-      if (path) insert({ type: "image", media_url: path });
+    const failed: File[] = [];
+    for (const { file } of selected) {
+      const path = await upload(file, file.name.split(".").pop() || "jpg");
+      if (!path || !(await insert({ type: "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
     }
     setUploading(false);
+    pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    pendingImageUrls.current.clear();
+    const remaining = failed.map((file) => {
+      const previewUrl = URL.createObjectURL(file);
+      pendingImageUrls.current.add(previewUrl);
+      return { file, previewUrl };
+    });
+    setPendingImages(remaining);
   };
 
   const sendVoice = async (blob: Blob, secs: number, mime: string) => {
@@ -328,6 +363,27 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
     const url = await signedUrl(message.media_url);
     if (!url) return alert("Could not open this image. Please try again.");
     setViewer(url);
+  };
+
+  const openViewOnceImage = async (message: Message) => {
+    if (!message.view_once || message.view_once_opened_at || message.sender_id === me.id) return;
+    const { data, error } = await supabase.rpc("open_view_once_message", { p_message_id: message.id });
+    if (error) {
+      alert("Could not open this photo. Please try again.");
+      return;
+    }
+    if (!data) {
+      setMsgs((list) => list.map((item) => item.id === message.id ? { ...item, view_once_opened_at: new Date().toISOString() } : item));
+      alert("This view-once photo has already been opened.");
+      return;
+    }
+    setMsgs((list) => list.map((item) => item.id === message.id ? { ...item, view_once_opened_at: new Date().toISOString() } : item));
+    const { data: signed, error: signError } = await supabase.storage.from("chat-media").createSignedUrl(data, 60);
+    if (signError || !signed?.signedUrl) {
+      alert("This photo was opened but could not be displayed.");
+      return;
+    }
+    setViewer(signed.signedUrl);
   };
   const markAudioPlayed = (id: string) => {
     if (playedAudioRef.current.has(id)) return;
@@ -557,9 +613,10 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                         <DropdownMenuContent align={mine ? "end" : "start"}>
                           <DropdownMenuItem onClick={() => { setEditing(null); setText(""); setReply(m); }}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
                           {mine && m.type === "text" && <DropdownMenuItem onClick={() => { setReply(null); setEditing(m); setText(m.content ?? ""); }}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
-                          {m.type === "image" && m.media_url && <DropdownMenuItem onClick={() => void viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
-                          {(m.media_url || attachment?.url) && <DropdownMenuItem onClick={() => void shareAttachment(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
-                          {(m.media_url || attachment?.url) && <DropdownMenuItem onClick={() => void downloadAttachment(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                          {m.type === "image" && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => void openViewOnceImage(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once photo</DropdownMenuItem>}
+                          {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
+                          {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void shareAttachment(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
+                          {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => void downloadAttachment(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
                           <DropdownMenuItem onClick={() => startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                           <DropdownMenuItem onClick={() => deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
                           {mine && <DropdownMenuItem onClick={() => deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
@@ -574,6 +631,13 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
                     )}
                     {m.deleted_for_everyone ? (
                       <p className="px-1 pr-16 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
+                    ) : m.type === "image" && m.media_url && m.view_once && !mine && m.view_once_opened_at ? (
+                      <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This photo was opened</p>
+                    ) : m.type === "image" && m.media_url && m.view_once && !mine ? (
+                      <button type="button" onClick={() => void openViewOnceImage(m)} className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
+                        <Clock3 className="h-5 w-5 shrink-0 text-primary" />
+                        <span className="text-left"><strong className="block">View once photo</strong><span className="text-xs text-muted-foreground">Open this photo one time</span></span>
+                      </button>
                     ) : m.type === "image" && m.media_url ? (
                       <ImageThumb path={m.media_url} onOpen={setViewer} />
                     ) : m.type === "audio" && m.media_url ? (
@@ -620,7 +684,7 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
       )}
 
       <div className={cn("flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4", sel && "hidden")} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files || []).slice(0, 20); if (files.length) sendImages(files); e.target.value = ""; }} />
+        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files || []).slice(0, 20); if (files.length) chooseImages(files); e.target.value = ""; }} />
         {text ? null : (
           <>
             <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
@@ -654,6 +718,23 @@ export function Conversation({ me, peer, online, away, onBack, onSeen, onViewPro
           <VoiceRecorder onSend={sendVoice} />
         )}
       </div>
+
+      {pendingImages.length > 0 && (
+        <Modal onClose={() => !uploading && cancelPendingImages()}>
+          <h3 className="text-base font-semibold">Send {pendingImages.length === 1 ? "photo" : `${pendingImages.length} photos`}?</h3>
+          <p className="mt-1 text-sm text-muted-foreground">Choose how {pendingImages.length === 1 ? "this photo is" : "these photos are"} sent to {peer.display_name}.</p>
+          <div className="mt-4 grid max-h-56 grid-cols-3 gap-2 overflow-y-auto">
+            {pendingImages.map(({ file, previewUrl }) => (
+              <img key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} alt={file.name} className="aspect-square w-full rounded-lg object-cover" />
+            ))}
+          </div>
+          <div className="mt-5 flex flex-col gap-2">
+            <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? "Sending…" : "Send normally"}</button>
+            <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? "Sending…" : "Send as view once"}</button>
+            <button type="button" disabled={uploading} onClick={cancelPendingImages} className="rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-60">Cancel</button>
+          </div>
+        </Modal>
+      )}
 
       {confirm && (
         <Modal onClose={() => !busyOp && setConfirm(null)}>

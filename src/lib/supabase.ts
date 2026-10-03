@@ -25,6 +25,8 @@ export type Message = {
   created_at: string;
   deleted_for: string[];
   deleted_for_everyone: boolean;
+  view_once?: boolean;
+  view_once_opened_at?: string | null;
 };
 
 const urlCache = new Map<string, { url: string; exp: number }>();
