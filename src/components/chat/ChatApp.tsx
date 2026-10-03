@@ -4,7 +4,8 @@ import { supabase, type Message, type Profile, emitMsg, bus, pairFilter } from "
 import { listTime } from "@/lib/format";
 import { messageTone, notify } from "@/lib/tones";
 import { cn } from "@/lib/utils";
-import { imageToAvatar, secureLogout, useIdleLogout } from "@/lib/security";
+import { secureLogout, useIdleLogout } from "@/lib/security";
+import { AvatarCropper } from "./AvatarCropper";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
 import { Conversation } from "./Conversation";
