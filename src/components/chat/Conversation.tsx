@@ -4,6 +4,7 @@ import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedU
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
+import { AppleEmoji } from "./AppleEmoji";
 import { AudioPlayer, ImageThumb } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker } from "./GiphyPicker";
@@ -1352,7 +1353,11 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                 <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
                   <ChevronDown className="h-4 w-4" />
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => actions.setMenu(null)}>
+                <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={(event) => {
+                  actions.setMenu(null);
+                  // Opening the emoji picker: keep focus there instead of jumping back to the menu button.
+                  if (pickerOpen) event.preventDefault();
+                }}>
                   <div role="group" aria-label="React to message" className="flex items-center justify-between gap-1 border-b px-1 pb-1">
                     {QUICK_REACTIONS.map((emoji) => (
                       <DropdownMenuItem
@@ -1361,7 +1366,7 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                         className="h-9 w-9 justify-center p-0 text-xl"
                         aria-label={`React ${emoji}`}
                       >
-                        {emoji}
+                        <AppleEmoji emoji={emoji} size={26} />
                       </DropdownMenuItem>
                     ))}
                   </div>
@@ -1422,10 +1427,10 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                     key={emoji}
                     type="button"
                     onClick={() => actions.react(m, emoji)}
-                    className={cn("rounded-full border px-1.5 py-0.5 text-xs", byMe ? "border-primary/50 bg-primary/10" : "border-border bg-background/60")}
+                    className={cn("flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-xs", byMe ? "border-primary/50 bg-primary/10" : "border-border bg-background/60")}
                     aria-label={`${emoji}, ${count} ${count === 1 ? "reaction" : "reactions"}${byMe ? ", reacted by you" : ""}`}
                   >
-                    {emoji} {count}
+                    <AppleEmoji emoji={emoji} size={16} />{count}
                   </button>
                 ))}
               </div>
@@ -1439,6 +1444,8 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
             sideOffset={8}
             className="w-auto overflow-hidden p-0"
             onOpenAutoFocus={(event) => event.preventDefault()}
+            // The closing message menu moves focus; that must not dismiss the picker.
+            onFocusOutside={(event) => event.preventDefault()}
           >
             <Suspense fallback={<div className="flex h-[400px] w-[min(360px,calc(100vw-2rem))] items-center justify-center text-sm text-muted-foreground">Loading…</div>}>
             <EmojiPicker
@@ -1446,7 +1453,8 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                 actions.setPicker(null);
                 actions.react(m, emoji.emoji);
               }}
-              emojiStyle={"native" as EmojiStyle}
+              emojiStyle={"apple" as EmojiStyle}
+              lazyLoadEmojis
               width="min(360px, calc(100vw - 2rem))"
               height={400}
               previewConfig={{ showPreview: false }}
