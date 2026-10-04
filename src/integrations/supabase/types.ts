@@ -14,42 +14,6 @@ export type Database = {
   }
   public: {
     Tables: {
-      message_reactions: {
-        Row: {
-          created_at: string
-          emoji: string
-          message_id: string
-          user_id: string
-        }
-        Insert: {
-          created_at?: string
-          emoji: string
-          message_id: string
-          user_id?: string
-        }
-        Update: {
-          created_at?: string
-          emoji?: string
-          message_id?: string
-          user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "message_reactions_message_id_fkey"
-            columns: ["message_id"]
-            isOneToOne: false
-            referencedRelation: "messages"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "message_reactions_user_id_fkey"
-            columns: ["user_id"]
-            isOneToOne: false
-            referencedRelation: "profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       calls: {
         Row: {
           caller_id: string
@@ -137,8 +101,6 @@ export type Database = {
           sender_id: string
           status: string
           type: string
-          view_once: boolean
-          view_once_opened_at: string | null
         }
         Insert: {
           content?: string | null
@@ -152,8 +114,6 @@ export type Database = {
           sender_id: string
           status?: string
           type?: string
-          view_once?: boolean
-          view_once_opened_at?: string | null
         }
         Update: {
           content?: string | null
@@ -167,8 +127,6 @@ export type Database = {
           sender_id?: string
           status?: string
           type?: string
-          view_once?: boolean
-          view_once_opened_at?: string | null
         }
         Relationships: [
           {
@@ -238,36 +196,24 @@ export type Database = {
           avatar_url: string | null
           display_name: string
           id: string
-          is_online: boolean
           last_seen: string | null
-          read_receipts_enabled: boolean
-          show_online_status: boolean
           status_text: string
-          telegram_alerts_enabled: boolean
           user_id: string
         }
         Insert: {
           avatar_url?: string | null
           display_name: string
           id: string
-          is_online?: boolean
           last_seen?: string | null
-          read_receipts_enabled?: boolean
-          show_online_status?: boolean
           status_text?: string
-          telegram_alerts_enabled?: boolean
           user_id: string
         }
         Update: {
           avatar_url?: string | null
           display_name?: string
           id?: string
-          is_online?: boolean
           last_seen?: string | null
-          read_receipts_enabled?: boolean
-          show_online_status?: boolean
           status_text?: string
-          telegram_alerts_enabled?: boolean
           user_id?: string
         }
         Relationships: []
@@ -277,10 +223,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      open_view_once_message: {
-        Args: { p_message_id: string }
-        Returns: string | null
-      }
+      [_ in never]: never
     }
     Enums: {
       [_ in never]: never
