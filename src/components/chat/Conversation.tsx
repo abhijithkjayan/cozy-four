@@ -1068,6 +1068,27 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         </Modal>
       )}
 
+      {infoMsg && (
+        <Modal onClose={() => setInfoMsg(null)}>
+          <h3 className="text-base font-semibold">Message info</h3>
+          <div className="mt-4 flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <Check className="h-5 w-5 text-muted-foreground" />
+              <div><div className="text-sm font-medium">Sent</div><div className="text-xs text-muted-foreground">{dayLabel(infoMsg.created_at)}, {fmtTime(infoMsg.created_at)}</div></div>
+            </div>
+            <div className="flex items-center gap-3">
+              <CheckCheck className="h-5 w-5 text-muted-foreground" />
+              <div><div className="text-sm font-medium">Delivered</div><div className="text-xs text-muted-foreground">{infoMsg.delivered_at ? `${dayLabel(infoMsg.delivered_at)}, ${fmtTime(infoMsg.delivered_at)}` : "Not delivered yet"}</div></div>
+            </div>
+            <div className="flex items-center gap-3">
+              <CheckCheck className="h-5 w-5 text-tick-read" />
+              <div><div className="text-sm font-medium">Read</div><div className="text-xs text-muted-foreground">{infoMsg.read_at ? `${dayLabel(infoMsg.read_at)}, ${fmtTime(infoMsg.read_at)}` : "Not read yet"}</div></div>
+            </div>
+          </div>
+          <button onClick={() => setInfoMsg(null)} className="mt-5 w-full rounded-lg border px-4 py-2.5 text-sm font-medium">Close</button>
+        </Modal>
+      )}
+
       {confirm && (
         <Modal onClose={() => !busyOp && setConfirm(null)}>
           {confirm === "clear" ? (
