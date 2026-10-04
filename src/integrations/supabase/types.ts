@@ -88,6 +88,42 @@ export type Database = {
           },
         ]
       }
+      message_reactions: {
+        Row: {
+          created_at: string
+          emoji: string
+          message_id: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          emoji: string
+          message_id: string
+          user_id?: string
+        }
+        Update: {
+          created_at?: string
+          emoji?: string
+          message_id?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "message_reactions_message_id_fkey"
+            columns: ["message_id"]
+            isOneToOne: false
+            referencedRelation: "messages"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "message_reactions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       messages: {
         Row: {
           content: string | null
@@ -101,6 +137,8 @@ export type Database = {
           sender_id: string
           status: string
           type: string
+          view_once: boolean
+          view_once_opened_at: string | null
         }
         Insert: {
           content?: string | null
@@ -114,6 +152,8 @@ export type Database = {
           sender_id: string
           status?: string
           type?: string
+          view_once?: boolean
+          view_once_opened_at?: string | null
         }
         Update: {
           content?: string | null
@@ -127,6 +167,8 @@ export type Database = {
           sender_id?: string
           status?: string
           type?: string
+          view_once?: boolean
+          view_once_opened_at?: string | null
         }
         Relationships: [
           {
@@ -223,7 +265,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      open_view_once_message: {
+        Args: { p_message_id: string }
+        Returns: string
+      }
     }
     Enums: {
       [_ in never]: never
