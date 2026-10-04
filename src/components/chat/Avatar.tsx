@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import type { Profile } from "@/lib/supabase";
 
-export function Avatar({ p, online, away, size = 44 }: { p: Profile; online?: boolean; away?: boolean; size?: number }) {
+export function Avatar({ p, online, away, size = 44 }: { p: Profile; online?: boolean | undefined; away?: boolean | undefined; size?: number }) {
   return (
     <div className="relative shrink-0" style={{ width: size, height: size }}>
       {p.avatar_url ? (
