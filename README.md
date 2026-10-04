@@ -51,7 +51,7 @@ DESIGN & PWA
 
 This project was built with [Lovable](https://lovable.dev).
 
-**Live app**: https://cozy-four.lovable.app
+**Live app**: https://ontarioisp.lovable.app
 
 ## Build with Lovable
 
