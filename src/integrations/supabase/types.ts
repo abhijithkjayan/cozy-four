@@ -130,8 +130,10 @@ export type Database = {
           created_at: string
           deleted_for: string[]
           deleted_for_everyone: boolean
+          delivered_at: string | null
           id: string
           media_url: string | null
+          read_at: string | null
           receiver_id: string
           reply_to: string | null
           sender_id: string
@@ -145,8 +147,10 @@ export type Database = {
           created_at?: string
           deleted_for?: string[]
           deleted_for_everyone?: boolean
+          delivered_at?: string | null
           id?: string
           media_url?: string | null
+          read_at?: string | null
           receiver_id: string
           reply_to?: string | null
           sender_id: string
@@ -160,8 +164,10 @@ export type Database = {
           created_at?: string
           deleted_for?: string[]
           deleted_for_everyone?: boolean
+          delivered_at?: string | null
           id?: string
           media_url?: string | null
+          read_at?: string | null
           receiver_id?: string
           reply_to?: string | null
           sender_id?: string
