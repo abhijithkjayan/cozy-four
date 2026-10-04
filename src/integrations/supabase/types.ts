@@ -238,24 +238,36 @@ export type Database = {
           avatar_url: string | null
           display_name: string
           id: string
+          is_online: boolean
           last_seen: string | null
+          read_receipts_enabled: boolean
+          show_online_status: boolean
           status_text: string
+          telegram_alerts_enabled: boolean
           user_id: string
         }
         Insert: {
           avatar_url?: string | null
           display_name: string
           id: string
+          is_online?: boolean
           last_seen?: string | null
+          read_receipts_enabled?: boolean
+          show_online_status?: boolean
           status_text?: string
+          telegram_alerts_enabled?: boolean
           user_id: string
         }
         Update: {
           avatar_url?: string | null
           display_name?: string
           id?: string
+          is_online?: boolean
           last_seen?: string | null
+          read_receipts_enabled?: boolean
+          show_online_status?: boolean
           status_text?: string
+          telegram_alerts_enabled?: boolean
           user_id?: string
         }
         Relationships: []
