@@ -189,7 +189,7 @@ export function ChatApp({ userId }: { userId: string }) {
       setLast(l);
       setUnread(u);
       // mark everything received as delivered
-      supabase.from("messages").update({ status: "delivered" }).eq("receiver_id", userId).eq("status", "sent").then();
+      supabase.from("messages").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("receiver_id", userId).eq("status", "sent").then();
     })();
   }, [userId]);
 
@@ -289,7 +289,7 @@ export function ChatApp({ userId }: { userId: string }) {
         return l;
       });
       if (isInsert && m.receiver_id === meId) {
-        if (m.status === "sent") supabase.from("messages").update({ status: "delivered" }).eq("id", m.id).eq("status", "sent").then();
+        if (m.status === "sent") supabase.from("messages").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("id", m.id).eq("status", "sent").then();
         const visible = selRef.current === peer && document.visibilityState === "visible";
         if (!visible && m.type !== "call") {
           setUnread((u) => ({ ...u, [peer]: (u[peer] ?? 0) + 1 }));

@@ -257,7 +257,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const markRead = useCallback(() => {
     if (document.visibilityState !== "visible") return;
     if (me.read_receipts_enabled) {
-      supabase.from("messages").update({ status: "read" }).eq("sender_id", peer.id).eq("receiver_id", me.id).neq("status", "read").then();
+      supabase.from("messages").update({ status: "read", read_at: new Date().toISOString() }).eq("sender_id", peer.id).eq("receiver_id", me.id).neq("status", "read").then();
     }
     onSeen(peer.id);
   }, [peer.id, me.id, me.read_receipts_enabled, onSeen]);

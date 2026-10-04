@@ -27,6 +27,8 @@ export type Message = {
   reply_to: string | null;
   status: "sent" | "delivered" | "read";
   created_at: string;
+  delivered_at?: string | null;
+  read_at?: string | null;
   deleted_for: string[];
   deleted_for_everyone: boolean;
   view_once?: boolean;
