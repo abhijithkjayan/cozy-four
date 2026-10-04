@@ -85,6 +85,13 @@
       "when": 1791091174096,
       "tag": "0011_0010_alpha_privacy_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1791097174168,
+      "tag": "0012_0011_message_receipt_timestamps",
+      "breakpoints": true
     }
   ]
 }
