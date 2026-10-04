@@ -1,5 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -149,6 +149,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const longPressTriggered = useRef(false);
   const messageIds = useRef(new Set<string>());
   const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null);
+  const [infoMsg, setInfoMsg] = useState<Message | null>(null);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
 
@@ -910,6 +911,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     download: (m, url, title) => void downloadAttachment(m, url, title),
     deleteForMe: (m) => void deleteForMe(m),
     deleteForAll: (m) => void deleteForAll(m),
+    info: (m) => setInfoMsg(m),
     openViewer: (url) => setViewer(url),
     audioPlayed: markAudioPlayed,
     pressStart: (id) => {
@@ -1291,6 +1293,7 @@ type RowActions = {
   download: (m: Message, url?: string, title?: string) => void;
   deleteForMe: (m: Message) => void;
   deleteForAll: (m: Message) => void;
+  info: (m: Message) => void;
   openViewer: (url: string) => void;
   audioPlayed: (id: string) => void;
   pressStart: (id: string) => void;
@@ -1412,6 +1415,7 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                   {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                  {mine && <DropdownMenuItem onClick={() => actions.info(m)}><Info className="mr-2 h-4 w-4" />Message info</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => actions.deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
                   {mine && <DropdownMenuItem onClick={() => actions.deleteForAll(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>}
