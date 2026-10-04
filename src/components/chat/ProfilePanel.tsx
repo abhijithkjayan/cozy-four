@@ -121,7 +121,7 @@ export function ProfilePanel({
     setAlertsError("");
     const { error: updateError } = await supabase
       .from("profiles")
-      .update({ [setting]: enabled })
+      .update({ [setting]: enabled } as { show_online_status?: boolean; read_receipts_enabled?: boolean })
       .eq("id", profile.id);
     setAlertsSaving(false);
     if (updateError) {

@@ -64,6 +64,27 @@
       "when": 1791060000000,
       "tag": "0008_message_reactions",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791091147469,
+      "tag": "0009_0007_view_once_media",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791091171656,
+      "tag": "0010_0009_telegram_alert_preferences",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791091174096,
+      "tag": "0011_0010_alpha_privacy_settings",
+      "breakpoints": true
     }
   ]
 }
