@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, ArrowLeft, Bell, BellOff, Camera, ChevronDown, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowLeft, Bell, BellOff, Camera, ChevronDown, Instagram, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
 import { supabase, type Message, type Profile, emitMsg, bus, hideChatForMe, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
 import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
@@ -431,6 +431,9 @@ export function ChatApp({ userId }: { userId: string }) {
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
+            <a href="https://www.instagram.com/" target="_blank" rel="noopener noreferrer" className="flex h-9 shrink-0 items-center justify-center rounded-lg bg-primary-foreground/15 px-2.5 hover:bg-primary-foreground/25" aria-label="Open Instagram in a new tab" title="Open Instagram">
+              <Instagram className="h-4 w-4" />
+            </a>
             <button type="button" onClick={tapCountdown} className="cursor-pointer select-none rounded-md bg-primary-foreground/15 px-1.5 py-1 text-[11px] font-semibold tabular-nums hover:bg-primary-foreground/25 sm:px-2 sm:text-xs" aria-label={idleLogoutDisabled ? "Automatic logout is disabled. Click to turn it back on." : `Automatic logout in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}. Click five times to disable it for this session.`} title={idleLogoutDisabled ? "Click to enable automatic logout for this session" : "Click five times to disable automatic logout for this session"}>
               {idleLogoutDisabled ? "OFF" : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`}
             </button>
