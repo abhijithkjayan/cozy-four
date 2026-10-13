@@ -10,4 +10,4 @@
 
 ## Open
 - Second fix user mentioned earlier — never specified; ask user
-- [ ] Instagram button opens native app (instagram:// with web fallback), no logout while away
+- [x] Instagram button opens native app (instagram:// with web fallback), no logout while away

@@ -451,12 +451,17 @@ export function ChatApp({ userId }: { userId: string }) {
             <button type="button" onClick={() => {
               idleState.instagram = true;
               setIgOpen(true);
-              const standalone = window.matchMedia?.("(display-mode: standalone)").matches || (navigator as unknown as { standalone?: boolean }).standalone;
-              // In the installed app, open a normal browser tab (has back/close controls) instead of a bare popup
-              const w = standalone
-                ? window.open("https://www.instagram.com/", "_blank")
-                : window.open("https://www.instagram.com/", "instagram_popup", "popup=yes,width=430,height=760,left=80,top=60");
-              if (w) { try { w.opener = null; igWinRef.current = w; w.focus(); } catch { /* ignore */ } }
+              const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+              if (mobile) {
+                // Try the Instagram app; if it didn't open (page still visible), fall back to the website
+                window.location.href = "instagram://app";
+                window.setTimeout(() => {
+                  if (document.visibilityState === "visible") window.open("https://www.instagram.com/", "_blank");
+                }, 1500);
+              } else {
+                const w = window.open("https://www.instagram.com/", "_blank");
+                if (w) { try { w.opener = null; igWinRef.current = w; } catch { /* ignore */ } }
+              }
             }} className="flex h-9 shrink-0 items-center justify-center rounded-lg bg-primary-foreground/15 px-2.5 hover:bg-primary-foreground/25" aria-label="Open Instagram in a popup window" title="Open Instagram">
               <Instagram className="h-4 w-4" />
             </button>
