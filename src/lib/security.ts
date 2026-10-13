@@ -7,7 +7,7 @@ const IDLE_LOGOUT_TAPS_KEY = "idle-logout-taps";
 const IDLE_LOGOUT_TAPS_TO_DISABLE = 5;
 
 // Set paused=true while a call is running so a long call is not cut off.
-export const idleState = { paused: false };
+export const idleState = { paused: false, instagram: false };
 
 const GLOBAL_LOGOUT_TOPIC = "app:global-logout";
 let globalLogoutChannel: ReturnType<typeof supabase.channel> | null = null;
@@ -101,7 +101,7 @@ export function useIdleLogout() {
 
     const check = () => {
       if (disabledRef.current) return;
-      if (idleState.paused) { mark(); return; }
+      if ((idleState.paused || idleState.instagram)) { mark(); return; }
       const idle = Date.now() - last.current;
       if (idle >= IDLE_LIMIT_MS) { secureLogout(); return; }
       setLeft(Math.ceil((IDLE_LIMIT_MS - idle) / 1000));
@@ -113,17 +113,17 @@ export function useIdleLogout() {
     let hideTimer: number | undefined;
     const onVis = () => {
       if (document.visibilityState === "hidden") {
-        if (disabledRef.current || idleState.paused) return;
+        if (disabledRef.current || (idleState.paused || idleState.instagram)) return;
         hiddenAt = Date.now();
-        hideTimer = window.setTimeout(() => { if (document.visibilityState === "hidden" && !idleState.paused && !disabledRef.current) secureLogout(); }, 3000);
+        hideTimer = window.setTimeout(() => { if (document.visibilityState === "hidden" && !(idleState.paused || idleState.instagram) && !disabledRef.current) secureLogout(); }, 3000);
       } else {
         clearTimeout(hideTimer);
-        if (hiddenAt && Date.now() - hiddenAt > 3000 && !idleState.paused && !disabledRef.current) { secureLogout(); return; }
+        if (hiddenAt && Date.now() - hiddenAt > 3000 && !(idleState.paused || idleState.instagram) && !disabledRef.current) { secureLogout(); return; }
         hiddenAt = 0;
         check();
       }
     };
-    const onHide = () => { if (!idleState.paused && !disabledRef.current) secureLogout(); };
+    const onHide = () => { if (!(idleState.paused || idleState.instagram) && !disabledRef.current) secureLogout(); };
     window.addEventListener("pagehide", onHide);
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onVis);

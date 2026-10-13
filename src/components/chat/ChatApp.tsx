@@ -4,7 +4,7 @@ import { supabase, type Message, type Profile, emitMsg, bus, hideChatForMe, pair
 import { listTime } from "@/lib/format";
 import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
 import { cn } from "@/lib/utils";
-import { secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
+import { idleState, secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
 import { AvatarCropper } from "./AvatarCropper";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
@@ -32,6 +32,9 @@ export function ChatApp({ userId }: { userId: string }) {
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [away, setAway] = useState<Set<string>>(new Set());
   const [sel, setSel] = useState<string | null>(null);
+  const [igOpen, setIgOpen] = useState(false);
+  const igWinRef = useRef<Window | null>(null);
+  useEffect(() => () => { idleState.instagram = false; }, []);
   const [last, setLast] = useState<Record<string, Message | undefined>>({});
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [missing, setMissing] = useState(false);
@@ -424,16 +427,41 @@ export function ChatApp({ userId }: { userId: string }) {
   const archivedCount = peers.filter((p) => archived.has(p.id)).length;
   const archivedUnread = peers.reduce((sum, p) => sum + (archived.has(p.id) ? unread[p.id] ?? 0 : 0), 0);
   const peer = peers.find((p) => p.id === sel);
+  const returnToChat = () => {
+    try { igWinRef.current?.close(); } catch { /* ignore */ }
+    igWinRef.current = null;
+    idleState.instagram = false;
+    setIgOpen(false);
+    window.focus();
+  };
 
   return (
     <CallProvider me={me} profiles={all}>
       <div className="app-shell flex flex-col overflow-hidden bg-background">
+        {igOpen && (
+          <div className="fixed inset-x-0 bottom-4 z-[100] flex justify-center px-4">
+            <button type="button" onClick={returnToChat} className="flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-lg ring-2 ring-primary-foreground/30">
+              <MessageSquare className="h-4 w-4" /> Return to Chat
+            </button>
+          </div>
+        )}
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
             <button type="button" onClick={() => {
-              const w = window.open("https://www.instagram.com/", "instagram_popup", "popup=yes,width=430,height=760,left=80,top=60,noopener,noreferrer");
-              if (w) { try { w.focus(); } catch { /* ignore */ } }
+              idleState.instagram = true;
+              setIgOpen(true);
+              const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+              if (mobile) {
+                // Try the Instagram app; if it didn't open (page still visible), fall back to the website
+                window.location.href = "instagram://app";
+                window.setTimeout(() => {
+                  if (document.visibilityState === "visible") window.open("https://www.instagram.com/", "_blank");
+                }, 1500);
+              } else {
+                const w = window.open("https://www.instagram.com/", "_blank");
+                if (w) { try { w.opener = null; igWinRef.current = w; } catch { /* ignore */ } }
+              }
             }} className="flex h-9 shrink-0 items-center justify-center rounded-lg bg-primary-foreground/15 px-2.5 hover:bg-primary-foreground/25" aria-label="Open Instagram in a popup window" title="Open Instagram">
               <Instagram className="h-4 w-4" />
             </button>
