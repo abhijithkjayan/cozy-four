@@ -4,7 +4,7 @@ import { supabase, type Message, type Profile, emitMsg, bus, hideChatForMe, pair
 import { listTime } from "@/lib/format";
 import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
 import { cn } from "@/lib/utils";
-import { secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
+import { idleState, secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
 import { AvatarCropper } from "./AvatarCropper";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
@@ -438,6 +438,13 @@ export function ChatApp({ userId }: { userId: string }) {
   return (
     <CallProvider me={me} profiles={all}>
       <div className="app-shell flex flex-col overflow-hidden bg-background">
+        {igOpen && (
+          <div className="fixed inset-x-0 bottom-4 z-[100] flex justify-center px-4">
+            <button type="button" onClick={returnToChat} className="flex items-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-primary-foreground shadow-lg ring-2 ring-primary-foreground/30">
+              <MessageSquare className="h-4 w-4" /> Return to Chat
+            </button>
+          </div>
+        )}
         <div className="flex h-11 shrink-0 items-center justify-between gap-2 bg-primary px-2 text-primary-foreground sm:px-4">
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
