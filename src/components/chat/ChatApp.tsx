@@ -32,6 +32,9 @@ export function ChatApp({ userId }: { userId: string }) {
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [away, setAway] = useState<Set<string>>(new Set());
   const [sel, setSel] = useState<string | null>(null);
+  const [igOpen, setIgOpen] = useState(false);
+  const igWinRef = useRef<Window | null>(null);
+  useEffect(() => () => { idleState.instagram = false; }, []);
   const [last, setLast] = useState<Record<string, Message | undefined>>({});
   const [unread, setUnread] = useState<Record<string, number>>({});
   const [missing, setMissing] = useState(false);
@@ -424,6 +427,13 @@ export function ChatApp({ userId }: { userId: string }) {
   const archivedCount = peers.filter((p) => archived.has(p.id)).length;
   const archivedUnread = peers.reduce((sum, p) => sum + (archived.has(p.id) ? unread[p.id] ?? 0 : 0), 0);
   const peer = peers.find((p) => p.id === sel);
+  const returnToChat = () => {
+    try { igWinRef.current?.close(); } catch { /* ignore */ }
+    igWinRef.current = null;
+    idleState.instagram = false;
+    setIgOpen(false);
+    window.focus();
+  };
 
   return (
     <CallProvider me={me} profiles={all}>
@@ -432,8 +442,14 @@ export function ChatApp({ userId }: { userId: string }) {
           <span className="min-w-0 flex-1 truncate text-center text-[10px] font-bold tracking-[0.12em] sm:text-xs sm:tracking-[0.35em]">CYBER SECURITY WING</span>
           <div className="flex shrink-0 items-center gap-1.5">
             <button type="button" onClick={() => {
-              const w = window.open("https://www.instagram.com/", "instagram_popup", "popup=yes,width=430,height=760,left=80,top=60,noopener,noreferrer");
-              if (w) { try { w.focus(); } catch { /* ignore */ } }
+              idleState.instagram = true;
+              setIgOpen(true);
+              const standalone = window.matchMedia?.("(display-mode: standalone)").matches || (navigator as unknown as { standalone?: boolean }).standalone;
+              // In the installed app, open a normal browser tab (has back/close controls) instead of a bare popup
+              const w = standalone
+                ? window.open("https://www.instagram.com/", "_blank")
+                : window.open("https://www.instagram.com/", "instagram_popup", "popup=yes,width=430,height=760,left=80,top=60");
+              if (w) { try { w.opener = null; igWinRef.current = w; w.focus(); } catch { /* ignore */ } }
             }} className="flex h-9 shrink-0 items-center justify-center rounded-lg bg-primary-foreground/15 px-2.5 hover:bg-primary-foreground/25" aria-label="Open Instagram in a popup window" title="Open Instagram">
               <Instagram className="h-4 w-4" />
             </button>
