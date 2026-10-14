@@ -17,11 +17,22 @@ type GiphyPickerProps = {
   onClose: () => void;
 };
 
-const DEFAULT_QUERY = "funny";
+const DEFAULT_QUERY = "";
+const TAGS = [
+  { label: "Trending", q: "" },
+  { label: "Kiss", q: "kiss" },
+  { label: "Intimacy", q: "passionate kiss" },
+  { label: "Romance", q: "romance" },
+  { label: "Hug", q: "hug" },
+  { label: "Love", q: "love" },
+  { label: "Funny", q: "funny" },
+  { label: "Reactions", q: "reaction" },
+];
 
 export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [tab, setTab] = useState<"gif" | "sticker">("gif");
   const [query, setQuery] = useState("");
+  const [input, setInput] = useState("");
   const [items, setItems] = useState<GiphyItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -47,13 +58,19 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
             <button key={value} onClick={() => setTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium capitalize ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{value}s</button>
           ))}
         </div>
-        <form onSubmit={(e) => { e.preventDefault(); setQuery((q) => q.trim() || DEFAULT_QUERY); }} className="m-3 flex items-center gap-2 rounded-lg bg-muted px-3">
+        <form onSubmit={(e) => { e.preventDefault(); setQuery(input.trim()); }} className="m-3 flex items-center gap-2 rounded-lg bg-muted px-3">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search KLIPY" aria-label="Search KLIPY" />
+          <input value={input} onChange={(e) => setInput(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search KLIPY" aria-label="Search KLIPY" />
         </form>
+        <div className="-mt-1 flex gap-1.5 overflow-x-auto px-3 pb-2">
+          {TAGS.map((t) => (
+            <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
+          ))}
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
           {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
+          {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
           {!loading && !error && <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
             {items.map((item) => (
               <button key={item.id} onClick={() => onSelect({ url: item.images.original.url, preview: item.images.fixed_width_small.url, title: item.title }, tab)} className="aspect-square overflow-hidden rounded-lg bg-muted focus:outline-none focus:ring-2 focus:ring-ring" aria-label={`Send ${item.title || tab}`}>
@@ -62,7 +79,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
             ))}
           </div>}
         </div>
-        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">Powered by KLIPY</div>
+        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">Powered by KLIPY & GIPHY</div>
       </div>
     </div>
   );
