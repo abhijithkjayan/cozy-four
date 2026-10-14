@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { AudioPlayer, ImageThumb } from "./Media";
+import { AudioPlayer, ImageThumb, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
@@ -422,7 +422,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         .from("messages")
         .select("*")
         .or(pairFilter(me.id, peer.id))
-        .in("type", ["image", "audio", "gif", "sticker"])
+        .in("type", ["image", "video", "audio", "gif", "sticker"])
         .not("deleted_for", "cs", `{${me.id}}`)
         .eq("deleted_for_everyone", false)
         .order("created_at", { ascending: false })
@@ -553,7 +553,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     const failed: File[] = [];
     for (const { file } of selected) {
       const path = await upload(file, file.name.split(".").pop() || "jpg");
-      if (!path || !(await insert({ type: "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
+      if (!path || !(await insert({ type: file.type.startsWith("video/") ? "video" : "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
     }
     setUploading(false);
     pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url));
@@ -1011,7 +1011,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       )}
 
       <div className={cn("flex items-end gap-2 bg-chat-bg px-2 py-2 md:px-4", sel && "hidden")} style={{ paddingBottom: "max(0.5rem, env(safe-area-inset-bottom))" }}>
-        <input ref={fileRef} type="file" accept="image/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files || []).slice(0, 20); if (files.length) chooseImages(files); e.target.value = ""; }} />
+        <input ref={fileRef} type="file" accept="image/*,video/*" multiple hidden onChange={(e) => { const files = Array.from(e.target.files || []).slice(0, 20); if (files.length) chooseImages(files); e.target.value = ""; }} />
         {text ? null : (
           <>
             <button onClick={() => fileRef.current?.click()} disabled={uploading} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-50" aria-label="Send photo">
@@ -1057,7 +1057,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <p className="mt-1 text-sm text-muted-foreground">Choose how {pendingImages.length === 1 ? "this photo is" : "these photos are"} sent to {peer.display_name}.</p>
           <div className="mt-4 grid max-h-56 grid-cols-3 gap-2 overflow-y-auto">
             {pendingImages.map(({ file, previewUrl }) => (
-              <img key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} alt={file.name} className="aspect-square w-full rounded-lg object-cover" />
+              file.type.startsWith("video/") ? <video key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} muted playsInline className="aspect-square w-full rounded-lg object-cover" /> : <img key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} alt={file.name} className="aspect-square w-full rounded-lg object-cover" />
             ))}
           </div>
           <div className="mt-5 flex flex-col gap-2">
@@ -1458,6 +1458,8 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                 <Clock3 className="h-5 w-5 shrink-0 text-primary" />
                 <span className="text-left"><strong className="block">View once photo</strong><span className="text-xs text-muted-foreground">Open this photo one time</span></span>
               </button>
+            ) : m.type === "video" && m.media_url ? (
+              <VideoPlayer path={m.media_url} />
             ) : m.type === "image" && m.media_url ? (
               <ImageThumb path={m.media_url} onOpen={actions.openViewer} />
             ) : m.type === "audio" && m.media_url ? (
