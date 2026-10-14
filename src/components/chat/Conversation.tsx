@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { AudioPlayer, ImageThumb } from "./Media";
+import { AudioPlayer, ImageThumb, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
