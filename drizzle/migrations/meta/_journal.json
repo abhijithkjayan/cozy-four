@@ -92,6 +92,13 @@
       "when": 1791097174168,
       "tag": "0012_0011_message_receipt_timestamps",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1791939888229,
+      "tag": "0013_video_messages",
+      "breakpoints": true
     }
   ]
 }
