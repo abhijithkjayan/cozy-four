@@ -164,3 +164,47 @@ export function sendTelegramAlert(input: AlertInput) {
     console.error("Telegram alert request failed:", error),
   );
 }
+
+/** Sends a chat photo/video/file (or GIF link) to the Telegram channel. Caller must be able to read the message (RLS). */
+export const shareToTelegram = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { messageId: string; url?: string }) => ({ messageId: String(input.messageId), url: input.url ? String(input.url) : undefined }))
+  .handler(async ({ data, context }) => {
+    const token = process.env["T_BOT"];
+    if (!token) throw new Error("Telegram bot is not configured.");
+    const chatId = process.env["T_CHAT_ID"] || DEFAULT_CHAT_ID;
+    const { data: msg, error } = await context.supabase
+      .from("messages")
+      .select("id, type, media_url, content, view_once, deleted_for_everyone")
+      .eq("id", data.messageId)
+      .maybeSingle();
+    if (error || !msg || msg.deleted_for_everyone) throw new Error("Message not found.");
+    if (msg.view_once) throw new Error("View-once media can't be shared.");
+    let fileUrl: string | undefined;
+    if (msg.media_url) {
+      const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(msg.media_url, 600);
+      fileUrl = signed?.signedUrl;
+    } else if ((msg.type === "gif" || msg.type === "sticker") && data.url?.startsWith("https://")) {
+      fileUrl = data.url;
+    }
+    if (!fileUrl) throw new Error("This message has no file to send.");
+    const isAnim = msg.type === "gif" || msg.type === "sticker" || /\.gif(\?|$)/i.test(fileUrl);
+    const [method, field] =
+      msg.type === "image" ? ["sendPhoto", "photo"] :
+      msg.type === "video" ? ["sendVideo", "video"] :
+      msg.type === "audio" ? ["sendAudio", "audio"] :
+      isAnim ? ["sendAnimation", "animation"] : ["sendDocument", "document"];
+    const send = async (m: string, f: string) => {
+      const res = await fetch(`https://api.telegram.org/bot${token}/${m}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, [f]: fileUrl }),
+      });
+      if (!res.ok) console.error(`Telegram ${m} failed:`, res.status, await res.text());
+      return res.ok;
+    };
+    // Fall back to sending as a plain file if Telegram rejects the typed upload.
+    const ok = (await send(method, field)) || (method !== "sendDocument" && (await send("sendDocument", "document")));
+    if (!ok) throw new Error("Telegram did not accept the file.");
+    return { sent: true };
+  });
