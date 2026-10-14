@@ -11,7 +11,7 @@ const pick = (file: KlipyItem["file"], sizes: string[]) => {
   const keys = [...sizes, ...Object.keys(file)];
   for (const k of keys) {
     const f = file[k];
-    const url = f?.gif?.url || f?.webp?.url;
+    const url = f?.["gif"]?.url || f?.["webp"]?.url;
     if (url) return url;
   }
   return "";
@@ -23,8 +23,8 @@ export const giphySearch = createServerFn({ method: "GET" })
     kind: input.kind === "sticker" ? ("sticker" as const) : ("gif" as const),
   }))
   .handler(async ({ data }) => {
-    const lovableKey = process.env.LOVABLE_API_KEY;
-    const klipyKey = process.env.KLIPY_API_KEY;
+    const lovableKey = process.env["LOVABLE_API_KEY"];
+    const klipyKey = process.env["KLIPY_API_KEY"];
     if (!lovableKey || !klipyKey) throw new Error("GIFs are not configured on the server.");
     const media = data.kind === "sticker" ? "stickers" : "gifs";
     const params = new URLSearchParams({ q: data.query || "funny", customer_id: "ontario-isp", per_page: "24" });
