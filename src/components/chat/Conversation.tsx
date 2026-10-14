@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { toast } from "sonner";
 import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
@@ -909,7 +910,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     viewImage: (m) => void viewImage(m),
     share: (m, url, title) => void shareAttachment(m, url, title),
     download: (m, url, title) => void downloadAttachment(m, url, title),
-    telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, url } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
+    telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, ...(url ? { url } : {}) } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e: unknown) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
     deleteForMe: (m) => void deleteForMe(m),
     deleteForAll: (m) => void deleteForAll(m),
     info: (m) => setInfoMsg(m),
