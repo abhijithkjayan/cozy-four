@@ -17,7 +17,7 @@ type GiphyPickerProps = {
   onClose: () => void;
 };
 
-const DEFAULT_QUERY = "game of thrones";
+const DEFAULT_QUERY = "funny";
 
 export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [tab, setTab] = useState<"gif" | "sticker">("gif");
@@ -31,7 +31,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
     setError(null);
     giphySearch({ data: { query: query || DEFAULT_QUERY, kind: tab } })
       .then((data) => setItems(data as GiphyItem[]))
-      .catch(() => setError("Could not load Giphy results."))
+      .catch(() => setError("Could not load GIFs."))
       .finally(() => setLoading(false));
   }, [query, tab]);
 
@@ -49,7 +49,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
         </div>
         <form onSubmit={(e) => { e.preventDefault(); setQuery((q) => q.trim() || DEFAULT_QUERY); }} className="m-3 flex items-center gap-2 rounded-lg bg-muted px-3">
           <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <input value={query} onChange={(e) => setQuery(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search Giphy" aria-label="Search Giphy" />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search KLIPY" aria-label="Search KLIPY" />
         </form>
         <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
           {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
@@ -62,7 +62,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
             ))}
           </div>}
         </div>
-        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">Powered by GIPHY</div>
+        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">Powered by KLIPY</div>
       </div>
     </div>
   );

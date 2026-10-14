@@ -105,3 +105,12 @@ export function AudioPlayer({ path, duration, played, onPlayed }: { path: string
     </div>
   );
 }
+
+export function VideoPlayer({ path }: { path: string }) {
+  const url = useSigned(path);
+  return url ? (
+    <video src={url} controls playsInline preload="metadata" className="max-h-80 w-full max-w-64 rounded-lg bg-muted" />
+  ) : (
+    <div className="h-48 w-56 animate-pulse rounded-lg bg-muted" />
+  );
+}

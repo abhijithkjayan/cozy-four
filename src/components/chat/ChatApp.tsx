@@ -18,6 +18,7 @@ export function preview(m: Message | undefined, me: string) {
   if (m.deleted_for_everyone) return "This message was deleted";
   const prefix = m.sender_id === me && m.type !== "call" ? "You: " : "";
   if (m.type === "image") return prefix + "📷 Photo";
+  if (m.type === "video") return prefix + "🎥 Video";
   if (m.type === "audio") return prefix + "🎤 Voice message";
   if (m.type === "location") return prefix + "📍 Location";
   if (m.type === "gif") return prefix + "GIF";
