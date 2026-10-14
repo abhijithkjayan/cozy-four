@@ -1,11 +1,12 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { toast } from "sonner";
 import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
-import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
+import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { AudioPlayer, ImageThumb, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker } from "./GiphyPicker";
@@ -909,6 +910,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     viewImage: (m) => void viewImage(m),
     share: (m, url, title) => void shareAttachment(m, url, title),
     download: (m, url, title) => void downloadAttachment(m, url, title),
+    telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, ...(url ? { url } : {}) } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e: unknown) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
     deleteForMe: (m) => void deleteForMe(m),
     deleteForAll: (m) => void deleteForAll(m),
     info: (m) => setInfoMsg(m),
@@ -1312,6 +1314,7 @@ type RowActions = {
   viewImage: (m: Message) => void;
   share: (m: Message, url?: string, title?: string) => void;
   download: (m: Message, url?: string, title?: string) => void;
+  telegram: (m: Message, url?: string) => void;
   deleteForMe: (m: Message) => void;
   deleteForAll: (m: Message) => void;
   info: (m: Message) => void;
@@ -1436,6 +1439,7 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
                   {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.telegram(m, attachment?.url)}><Send className="mr-2 h-4 w-4" />Send to Telegram</DropdownMenuItem>}
                   {mine && <DropdownMenuItem onClick={() => actions.info(m)}><Info className="mr-2 h-4 w-4" />Message info</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => actions.deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
