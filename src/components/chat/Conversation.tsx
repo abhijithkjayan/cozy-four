@@ -120,6 +120,14 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const lastTypingSent = useRef(0);
   const typingTimer = useRef<number | undefined>(undefined);
   const fileRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  // Grow the composer with its text (like WhatsApp), up to ~6 lines, then scroll inside it
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [text]);
   const { startCall, busy } = useCalls();
   const [sel, setSel] = useState<Set<string> | null>(null); // selection mode when not null
   const [confirm, setConfirm] = useState<null | "clear" | "delete">(null);
@@ -902,7 +910,11 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     toggleSel,
     startSel,
     reply: (m) => { setEditing(null); setText(""); setReply(m); },
-    edit: (m) => { setReply(null); setEditing(m); setText(m.content ?? ""); },
+    edit: (m) => {
+      setReply(null); setEditing(m); setText(m.content ?? "");
+      // Focus the box with the cursor at the end, ready to edit
+      requestAnimationFrame(() => { const el = inputRef.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); el.scrollTop = el.scrollHeight; } });
+    },
     react: (m, emoji) => void toggleReaction(m, emoji),
     setMenu: (id) => setOpenMessageMenu(id),
     setPicker: (id) => setReactionPickerMessage(id),
@@ -1025,6 +1037,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           </>
         )}
         <textarea
+          ref={inputRef}
           value={text}
           onChange={(e) => onType(e.target.value)}
           onPaste={(e) => {
@@ -1042,7 +1055,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           autoCapitalize="sentences"
           rows={1}
           placeholder={uploading ? "Sending…" : "Message"}
-          className="max-h-32 min-h-11 flex-1 resize-none rounded-3xl border-0 bg-card px-4 py-2.5 text-base leading-snug shadow-sm outline-none"
+          className="max-h-40 min-h-11 flex-1 resize-none overflow-y-auto rounded-3xl border-0 bg-card px-4 py-2.5 text-base leading-snug shadow-sm outline-none"
         />
         {text.trim() ? (
           <button disabled={savingEdit} onClick={sendText} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground disabled:opacity-50" aria-label={editing ? "Save edit" : "Send"}>

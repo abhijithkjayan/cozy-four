@@ -4,7 +4,7 @@ import { createServerFn } from "@tanstack/react-start";
 // Passwords here are what the user types; the app adds the same suffix as PASSWORD_PAD in src/lib/supabase.ts.
 const PAD = "_pad_secure";
 const USERS: { id: string; pw: string; old?: string; name: string }[] = [
-  { id: "jamie", pw: "chiku", old: "user1", name: "Alpha" },
+  { id: "jamie", pw: "hrudhya", old: "user1", name: "Alpha" },
   { id: "cersi", pw: "vichu", old: "user2", name: "Beta" },
   { id: "tyrion", pw: "00000", old: "user3", name: "Gamma" },
   { id: "tywin", pw: "00000", old: "user4", name: "Delta" },
@@ -30,6 +30,11 @@ export const ensureAccounts = createServerFn({ method: "POST" }).handler(async (
         if (error) throw new Error(error.message);
         id = oldId;
       }
+    }
+    else if (id) {
+      // Keep the password in sync with the list above (so changing `pw` here takes effect)
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(id, { password: u.pw + PAD });
+      if (error) throw new Error(error.message);
     }
     if (!id) {
       const { data, error } = await supabaseAdmin.auth.admin.createUser({
