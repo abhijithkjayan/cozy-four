@@ -46,6 +46,10 @@ export function ProfilePanel({
   const [activityError, setActivityError] = useState("");
   const [alertsSaving, setAlertsSaving] = useState(false);
   const [alertsError, setAlertsError] = useState("");
+  // Which toggle is mid-save, so only that row shows "Saving…"
+  const [savingSetting, setSavingSetting] = useState<
+    "telegram" | "show_online_status" | "read_receipts_enabled" | null
+  >(null);
 
   useEffect(() => setStatus(profile.status_text ?? ""), [profile.id, profile.status_text]);
   useEffect(
@@ -98,6 +102,7 @@ export function ProfilePanel({
 
   async function toggleTelegramAlerts() {
     const enabled = !telegramAlertsEnabled;
+    setSavingSetting("telegram");
     setAlertsSaving(true);
     setAlertsError("");
     const { error: updateError } = await supabase
@@ -105,6 +110,7 @@ export function ProfilePanel({
       .update({ telegram_alerts_enabled: enabled })
       .eq("id", profile.id);
     setAlertsSaving(false);
+    setSavingSetting(null);
     if (updateError) {
       setAlertsError(`Could not update Telegram alerts: ${updateError.message}`);
       return;
@@ -117,6 +123,7 @@ export function ProfilePanel({
     setting: "show_online_status" | "read_receipts_enabled",
     enabled: boolean,
   ) {
+    setSavingSetting(setting);
     setAlertsSaving(true);
     setAlertsError("");
     const { error: updateError } = await supabase
@@ -124,6 +131,7 @@ export function ProfilePanel({
       .update({ [setting]: enabled } as { show_online_status?: boolean; read_receipts_enabled?: boolean })
       .eq("id", profile.id);
     setAlertsSaving(false);
+    setSavingSetting(null);
     if (updateError) {
       setAlertsError(`Could not update privacy settings: ${updateError.message}`);
       return;
@@ -196,33 +204,57 @@ export function ProfilePanel({
               </h3>
               <div className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Show online status</span>
+                  <div className="min-w-0">
+                    <div className="text-sm">Show online status</div>
+                    <p className="text-xs text-muted-foreground">
+                      {showOnlineStatus
+                        ? "Others can see when you're online and your last seen."
+                        : "Your online status and last seen are hidden."}
+                    </p>
+                  </div>
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
+                    className="shrink-0"
                     onClick={() =>
                       void togglePrivacySetting("show_online_status", !showOnlineStatus)
                     }
                     disabled={alertsSaving}
                     aria-pressed={showOnlineStatus}
                   >
-                    {showOnlineStatus ? "On" : "Off"}
+                    {savingSetting === "show_online_status"
+                      ? "Saving…"
+                      : showOnlineStatus
+                        ? "Turn off"
+                        : "Turn on"}
                   </Button>
                 </div>
                 <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm">Send read receipts</span>
+                  <div className="min-w-0">
+                    <div className="text-sm">Send read receipts</div>
+                    <p className="text-xs text-muted-foreground">
+                      {readReceiptsEnabled
+                        ? "Read receipts are on."
+                        : "Read receipts are off. You won't send or see blue ticks."}
+                    </p>
+                  </div>
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
+                    className="shrink-0"
                     onClick={() =>
                       void togglePrivacySetting("read_receipts_enabled", !readReceiptsEnabled)
                     }
                     disabled={alertsSaving}
                     aria-pressed={readReceiptsEnabled}
                   >
-                    {readReceiptsEnabled ? "On" : "Off"}
+                    {savingSetting === "read_receipts_enabled"
+                      ? "Saving…"
+                      : readReceiptsEnabled
+                        ? "Turn off"
+                        : "Turn on"}
                   </Button>
                 </div>
               </div>
@@ -244,7 +276,11 @@ export function ProfilePanel({
                   disabled={alertsSaving}
                   aria-pressed={telegramAlertsEnabled}
                 >
-                  {alertsSaving ? "Saving…" : telegramAlertsEnabled ? "Turn off" : "Turn on"}
+                  {savingSetting === "telegram"
+                    ? "Saving…"
+                    : telegramAlertsEnabled
+                      ? "Turn off"
+                      : "Turn on"}
                 </Button>
               </div>
               {alertsError && <p className="mt-2 text-sm text-destructive">{alertsError}</p>}
