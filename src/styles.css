@@ -171,3 +171,13 @@ body { -webkit-tap-highlight-color: transparent; }
 button, [role="button"], a { touch-action: manipulation; }
 input, textarea, select { font-size: max(16px, 1em); }
 textarea, .select-text { -webkit-user-select: text; user-select: text; }
+
+/* Double-tap ❤️ on a message */
+@keyframes heart-burst {
+  0% { transform: scale(0.2); opacity: 0; }
+  35% { transform: scale(1.25); opacity: 1; }
+  60% { transform: scale(0.95); opacity: 1; }
+  100% { transform: scale(1.1) translateY(-12px); opacity: 0; }
+}
+.animate-heart-burst { display: inline-block; animation: heart-burst 700ms ease-out forwards; }
+@media (prefers-reduced-motion: reduce) { .animate-heart-burst { animation-duration: 1ms; } }

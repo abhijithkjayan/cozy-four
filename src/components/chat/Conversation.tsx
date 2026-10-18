@@ -85,7 +85,13 @@ function renderLinkedText(content: string): ReactNode[] {
 }
 
 // Memoized: the parent re-renders every second for the idle-logout countdown.
-export const Conversation = memo(function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void }) {
+export const Conversation = memo(function Conversation({ me, peer, online, away, onBack, onSeen, onViewProfile, initialUnread = 0 }: { me: Profile; peer: Profile; online: boolean; away: boolean; onBack: () => void; onSeen: (id: string) => void; onViewProfile: (profile: Profile) => void; initialUnread?: number }) {
+  // Unread count when the chat was opened (it is cleared right after), for the "N unread messages" divider
+  const [unreadCount] = useState(initialUnread);
+  const [unreadStartId, setUnreadStartId] = useState<string | null>(null);
+  const unreadHandled = useRef(false);
+  // Messages that arrived live, so only they get the slide-in animation
+  const freshIds = useRef(new Set<string>());
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   const [hasMore, setHasMore] = useState(true);
@@ -286,6 +292,18 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     const rows = ((data ?? []) as Message[]).reverse();
     setHasMore(rows.length === PAGE);
     if (before && scroller.current) prevHeight.current = scroller.current.scrollHeight;
+    if (!before && !unreadHandled.current) {
+      unreadHandled.current = true;
+      // Open at the first unread message, under an "N unread messages" divider (like WhatsApp)
+      if (unreadCount > 0) {
+        const fromPeer = rows.filter((row) => row.sender_id === peer.id && !row.deleted_for?.includes(me.id));
+        const first = fromPeer[Math.max(0, fromPeer.length - unreadCount)];
+        if (first) {
+          setUnreadStartId(first.id);
+          pendingScrollId.current = first.id;
+        }
+      }
+    }
     setMsgs((m) => (before ? [...rows, ...m] : rows));
     if (rows.length) {
       const ids = rows.map((message) => message.id);
@@ -303,6 +321,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       }
     }
     setLoading(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unreadCount is fixed for the life of this chat view
   }, [me.id, peer.id]);
 
   useEffect(() => {
@@ -321,6 +340,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       if (!inPair) return;
       const sc = scroller.current;
       if (m.sender_id === peer.id && !messageIds.current.has(m.id) && sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight >= 150) setNewBelow((n) => n + 1);
+      if (!messageIds.current.has(m.id)) freshIds.current.add(m.id);
       setMsgs((list) => {
         const i = list.findIndex((x) => x.id === m.id);
         if (i >= 0) { const c = [...list]; c[i] = m; return c; }
@@ -908,17 +928,21 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   const byId = useMemo(() => new Map(msgs.map((m) => [m.id, m])), [msgs]);
   const rows = useMemo(() => {
-    const out: { m: Message; day: string | null }[] = [];
+    const out: { m: Message; day: string | null; first: boolean }[] = [];
     let prevDay = "";
+    let prev: Message | null = null;
     for (const m of msgs) {
       if (!visible(m) || (m.type === "call" && m.deleted_for_everyone)) continue;
       const day = dayLabel(m.created_at);
-      out.push({ m, day: day !== prevDay ? day : null });
+      // First bubble of a run from the same sender gets the tail and extra space above (like WhatsApp)
+      const first = !prev || day !== prevDay || prev.sender_id !== m.sender_id || prev.type === "call" || m.id === unreadStartId;
+      out.push({ m, day: day !== prevDay ? day : null, first });
       prevDay = day;
+      prev = m;
     }
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `visible` only depends on me.id
-  }, [msgs, me.id]);
+  }, [msgs, me.id, unreadStartId]);
   const reactionsByMessage = useMemo(() => {
     const map = new Map<string, MessageReaction[]>();
     for (const reaction of reactions) {
@@ -1024,11 +1048,14 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       <div className="relative min-h-0 flex-1">
       <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 md:px-[8%]">
         {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
-        {rows.map(({ m, day }) => (
+        {rows.map(({ m, day, first }) => (
           <MessageRow
             key={m.id}
             m={m}
             day={day}
+            first={first}
+            fresh={freshIds.current.has(m.id)}
+            unreadLabel={m.id === unreadStartId ? `${unreadCount} unread message${unreadCount === 1 ? "" : "s"}` : null}
             mine={m.sender_id === me.id}
             rep={m.reply_to ? byId.get(m.reply_to) : undefined}
             selecting={!!sel}
@@ -1407,6 +1434,9 @@ function useStableActions<T extends object>(impl: T): T {
 type RowProps = {
   m: Message;
   day: string | null;
+  first: boolean;
+  fresh: boolean;
+  unreadLabel: string | null;
   mine: boolean;
   rep: Message | undefined;
   selecting: boolean;
@@ -1423,10 +1453,27 @@ type RowProps = {
 
 const SWIPE_REPLY_AT = 56; // px of drag needed to trigger a reply
 const SWIPE_MAX = 80;
+const DOUBLE_TAP_MS = 300;
+// 1–3 emoji and nothing else → shown large, without a bubble
+const JUMBO_EMOJI = /^(?:\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier}|‍\p{Extended_Pictographic})*\s*){1,3}$/u;
 
 // Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
-const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, peerName, actions }: RowProps) {
+const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, peerName, actions }: RowProps) {
   const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
+  const jumbo = m.type === "text" && !m.deleted_for_everyone && !rep && JUMBO_EMOJI.test(m.content?.trim() ?? "");
+  // Double-tap (touch) a text message to ❤️ it, with a little heart burst
+  const lastTap = useRef(0);
+  const [burst, setBurst] = useState(false);
+  const burstTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => clearTimeout(burstTimer.current), []);
+  const heartByMe = reactions?.some((reaction) => reaction.user_id === meId && reaction.emoji === "❤️") ?? false;
+  const doubleTapHeart = () => {
+    if (!heartByMe) actions.react(m, "❤️");
+    navigator.vibrate?.(10);
+    setBurst(true);
+    clearTimeout(burstTimer.current);
+    burstTimer.current = window.setTimeout(() => setBurst(false), 700);
+  };
   // Swipe a bubble sideways (touch) to reply, like WhatsApp.
   const [dx, setDx] = useState(0);
   const [dragging, setDragging] = useState(false);
@@ -1470,6 +1517,14 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
     if (g?.mode === "swipe") {
       swiped.current = true;
       if (armed.current) actions.reply(m);
+    } else if (g?.mode === "idle" && g.touch && m.type === "text") {
+      const now = Date.now();
+      if (now - lastTap.current < DOUBLE_TAP_MS) {
+        lastTap.current = 0;
+        doubleTapHeart();
+      } else {
+        lastTap.current = now;
+      }
     }
     armed.current = false;
     setDragging(false);
@@ -1491,6 +1546,11 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
       {day && (
         <div className="my-3 flex justify-center">
           <span className="rounded-lg bg-card px-3 py-1 text-xs text-muted-foreground shadow-sm">{day}</span>
+        </div>
+      )}
+      {unreadLabel && (
+        <div className="-mx-3 my-3 bg-card/70 py-1.5 text-center md:-mx-[8%]">
+          <span className="rounded-full bg-card px-3 py-1 text-xs font-medium text-primary shadow-sm">{unreadLabel}</span>
         </div>
       )}
       {m.type === "call" ? (
@@ -1516,7 +1576,7 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
           <PopoverAnchor asChild>
             <div
               ref={(element) => actions.register(m.id, element)}
-              className={cn("group relative my-0.5 flex touch-pan-y items-center gap-2 rounded-md transition-colors duration-700 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", highlighted && "bg-primary/20 duration-150", selecting && "cursor-pointer")}
+              className={cn("group relative mb-0.5 flex touch-pan-y items-center gap-2 rounded-md transition-colors duration-700 [-webkit-touch-callout:none]", first ? "mt-2" : "mt-0", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", highlighted && "bg-primary/20 duration-150", selecting && "cursor-pointer", fresh && (mine ? "animate-in fade-in slide-in-from-right-4 duration-200" : "animate-in fade-in slide-in-from-left-4 duration-200"))}
               onClick={selecting ? () => actions.toggleSel(m.id) : undefined}
               onClickCapture={(event) => {
                 if (swiped.current) { event.preventDefault(); event.stopPropagation(); swiped.current = false; return; }
@@ -1539,9 +1599,18 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
           )}
           {selecting && <div className={cn(mine && "order-last")}><Tick on={selected} /></div>}
           <div
-            className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in", !dragging && "transition-transform duration-200")}
+            className={cn(
+              "relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 md:max-w-[65%]",
+              jumbo ? "bg-transparent" : cn("shadow-sm", mine ? "bg-bubble-out" : "bg-bubble-in", first && (mine ? "rounded-tr-sm" : "rounded-tl-sm")),
+              !dragging && "transition-transform duration-200",
+            )}
             style={dx ? { transform: `translateX(${dx}px)` } : undefined}
           >
+            {burst && (
+              <span aria-hidden className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center">
+                <span className="animate-heart-burst"><AppleEmoji emoji="❤️" size={44} /></span>
+              </span>
+            )}
             {!m.deleted_for_everyone && (
               <DropdownMenu open={menuOpen} onOpenChange={(open) => actions.setMenu(open ? m.id : null)}>
                 <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
@@ -1618,6 +1687,8 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
               <button onClick={() => actions.openViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
                 <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
               </button>
+            ) : jumbo ? (
+              <p className="px-1 text-5xl leading-tight">{m.content?.trim()}</p>
             ) : (
               <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
             )}

@@ -597,7 +597,7 @@ export function ChatApp({ userId }: { userId: string }) {
         </aside>
         <main className={cn("min-w-0 flex-1", !sel && "hidden md:flex")}>
           {peer ? (
-            <Conversation key={`${peer.id}:${chatVersion}`} me={me} peer={peer} online={peer.show_online_status && online.has(peer.id)} away={peer.show_online_status && away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} />
+            <Conversation key={`${peer.id}:${chatVersion}`} me={me} peer={peer} online={peer.show_online_status && online.has(peer.id)} away={peer.show_online_status && away.has(peer.id)} onBack={closeChat} onSeen={clearUnread} onViewProfile={openProfile} initialUnread={unread[peer.id] ?? 0} />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-chat-bg text-center text-muted-foreground">
               <p className="text-lg font-medium text-foreground">Ontario ISP</p>
