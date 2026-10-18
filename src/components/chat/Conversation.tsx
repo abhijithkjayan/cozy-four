@@ -159,6 +159,12 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const messageIds = useRef(new Set<string>());
   const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null);
   const [infoMsg, setInfoMsg] = useState<Message | null>(null);
+  // Briefly highlighted message (after jumping to a replied-to message)
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const flashTimer = useRef<number | undefined>(undefined);
+  // "Jump to latest" button + count of messages that arrived while scrolled up
+  const [showDown, setShowDown] = useState(false);
+  const [newBelow, setNewBelow] = useState(0);
 
   const visible = (m: Message) => !m.deleted_for?.includes(me.id);
 
@@ -313,6 +319,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       const m = (e as CustomEvent<Message>).detail;
       const inPair = (m.sender_id === peer.id && m.receiver_id === me.id) || (m.sender_id === me.id && m.receiver_id === peer.id);
       if (!inPair) return;
+      const sc = scroller.current;
+      if (m.sender_id === peer.id && !messageIds.current.has(m.id) && sc && sc.scrollHeight - sc.scrollTop - sc.clientHeight >= 150) setNewBelow((n) => n + 1);
       setMsgs((list) => {
         const i = list.findIndex((x) => x.id === m.id);
         if (i >= 0) { const c = [...list]; c[i] = m; return c; }
@@ -379,7 +387,25 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const onScroll = () => {
     const el = scroller.current;
     if (el && el.scrollTop < 60 && hasMore && !loading && msgs.length) load(msgs[0]!.created_at);
+    if (el) {
+      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      setShowDown(fromBottom > 300);
+      if (fromBottom < 150) setNewBelow(0);
+    }
   };
+
+  const scrollToBottom = () => {
+    const el = scroller.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    setNewBelow(0);
+  };
+
+  const flashMessage = (id: string) => {
+    setFlashId(id);
+    clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlashId(null), 1400);
+  };
+  useEffect(() => () => clearTimeout(flashTimer.current), []);
 
   const searchMessages = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -909,7 +935,16 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     },
     toggleSel,
     startSel,
-    reply: (m) => { setEditing(null); setText(""); setReply(m); },
+    reply: (m) => {
+      if (editing) setText("");
+      setEditing(null); setReply(m);
+      // Ready to type the reply straight away, like WhatsApp
+      requestAnimationFrame(() => inputRef.current?.focus());
+    },
+    jumpTo: (id) => {
+      messageElements.current.get(id)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      flashMessage(id);
+    },
     edit: (m) => {
       setReply(null); setEditing(m); setText(m.content ?? "");
       // Focus the box with the cursor at the end, ready to edit
@@ -931,6 +966,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     pressStart: (id) => {
       pressTimer.current = window.setTimeout(() => {
         longPressTriggered.current = true;
+        navigator.vibrate?.(20);
         setOpenMessageMenu(id);
       }, 500);
     },
@@ -985,7 +1021,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       </header>
       )}
 
-      <div ref={scroller} onScroll={onScroll} className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 md:px-[8%]">
+      <div className="relative min-h-0 flex-1">
+      <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 md:px-[8%]">
         {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
         {rows.map(({ m, day }) => (
           <MessageRow
@@ -1000,6 +1037,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             played={playedAudio.has(m.id)}
             menuOpen={openMessageMenu === m.id}
             pickerOpen={reactionPickerMessage === m.id}
+            highlighted={flashId === m.id}
             meId={me.id}
             peerName={peer.display_name}
             actions={actions}
@@ -1012,6 +1050,20 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             </div>
           </div>
         )}
+      </div>
+      {(showDown || newBelow > 0) && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          className="absolute bottom-3 right-3 flex h-10 w-10 items-center justify-center rounded-full bg-card text-muted-foreground shadow-md active:scale-95 md:right-6"
+          aria-label={newBelow ? `${newBelow} new message${newBelow === 1 ? "" : "s"}, scroll to latest` : "Scroll to latest message"}
+        >
+          <ChevronDown className="h-5 w-5" />
+          {newBelow > 0 && (
+            <span className="absolute -top-1.5 -right-1 min-w-5 rounded-full bg-primary px-1 text-center text-[11px] font-semibold leading-5 text-primary-foreground">{newBelow > 99 ? "99+" : newBelow}</span>
+          )}
+        </button>
+      )}
       </div>
 
       {(reply || editing) && (
@@ -1319,6 +1371,7 @@ type RowActions = {
   toggleSel: (id: string) => void;
   startSel: (id: string) => void;
   reply: (m: Message) => void;
+  jumpTo: (id: string) => void;
   edit: (m: Message) => void;
   react: (m: Message, emoji: string) => void;
   setMenu: (id: string | null) => void;
@@ -1362,14 +1415,67 @@ type RowProps = {
   played: boolean;
   menuOpen: boolean;
   pickerOpen: boolean;
+  highlighted: boolean;
   meId: string;
   peerName: string;
   actions: RowActions;
 };
 
+const SWIPE_REPLY_AT = 56; // px of drag needed to trigger a reply
+const SWIPE_MAX = 80;
+
 // Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
-const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, meId, peerName, actions }: RowProps) {
+const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, peerName, actions }: RowProps) {
   const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
+  // Swipe a bubble sideways (touch) to reply, like WhatsApp.
+  const [dx, setDx] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const gesture = useRef<{ x: number; y: number; touch: boolean; mode: "idle" | "swipe" | "scroll" } | null>(null);
+  const armed = useRef(false);
+  const swiped = useRef(false);
+  const interactive = !selecting && !m.deleted_for_everyone;
+
+  const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!interactive) return;
+    actions.pressStart(m.id);
+    gesture.current = { x: event.clientX, y: event.clientY, touch: event.pointerType !== "mouse", mode: "idle" };
+    armed.current = false;
+  };
+  const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const g = gesture.current;
+    if (!g) return;
+    const moveX = event.clientX - g.x;
+    const moveY = event.clientY - g.y;
+    if (g.mode === "idle") {
+      if (Math.hypot(moveX, moveY) > 8) actions.cancelPress();
+      if (g.touch && Math.abs(moveX) > 12 && Math.abs(moveX) > Math.abs(moveY) * 1.5) {
+        g.mode = "swipe";
+        setDragging(true);
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } else if (Math.abs(moveY) > 12) {
+        g.mode = "scroll";
+      }
+    }
+    if (g.mode !== "swipe") return;
+    const next = Math.max(-SWIPE_MAX, Math.min(SWIPE_MAX, moveX * 0.7));
+    const reached = Math.abs(next) >= SWIPE_REPLY_AT;
+    if (reached && !armed.current) navigator.vibrate?.(15);
+    armed.current = reached;
+    setDx(next);
+  };
+  const endGesture = () => {
+    actions.cancelPress();
+    const g = gesture.current;
+    gesture.current = null;
+    if (g?.mode === "swipe") {
+      swiped.current = true;
+      if (armed.current) actions.reply(m);
+    }
+    armed.current = false;
+    setDragging(false);
+    setDx(0);
+  };
+  const swipeProgress = Math.min(1, Math.abs(dx) / SWIPE_REPLY_AT);
   const reactionGroups = useMemo(() => {
     const groups = new Map<string, { emoji: string; count: number; byMe: boolean }>();
     for (const reaction of reactions ?? []) {
@@ -1410,17 +1516,32 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
           <PopoverAnchor asChild>
             <div
               ref={(element) => actions.register(m.id, element)}
-              className={cn("group my-0.5 flex items-center gap-2 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", selecting && "cursor-pointer")}
+              className={cn("group relative my-0.5 flex touch-pan-y items-center gap-2 rounded-md transition-colors duration-700 [-webkit-touch-callout:none]", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", highlighted && "bg-primary/20 duration-150", selecting && "cursor-pointer")}
               onClick={selecting ? () => actions.toggleSel(m.id) : undefined}
-              onClickCapture={actions.consumeLongPressClick}
-              onPointerDown={!selecting && !m.deleted_for_everyone ? () => actions.pressStart(m.id) : undefined}
-              onPointerUp={actions.cancelPress}
-              onPointerLeave={actions.cancelPress}
-              onPointerCancel={actions.cancelPress}
-              onPointerMove={actions.cancelPress}
+              onClickCapture={(event) => {
+                if (swiped.current) { event.preventDefault(); event.stopPropagation(); swiped.current = false; return; }
+                actions.consumeLongPressClick(event);
+              }}
+              onPointerDown={onPointerDown}
+              onPointerMove={onPointerMove}
+              onPointerUp={endGesture}
+              onPointerCancel={endGesture}
+              onPointerLeave={() => { if (gesture.current?.mode !== "swipe") { actions.cancelPress(); gesture.current = null; } }}
             >
+          {dx !== 0 && (
+            <span
+              aria-hidden
+              className={cn("pointer-events-none absolute top-1/2 flex h-8 w-8 items-center justify-center rounded-full bg-card text-muted-foreground shadow-sm", dx > 0 ? "left-1" : "right-1", swipeProgress >= 1 && "text-primary")}
+              style={{ opacity: swipeProgress, transform: `translateY(-50%) scale(${0.6 + 0.4 * swipeProgress})` }}
+            >
+              <Reply className="h-4 w-4" />
+            </span>
+          )}
           {selecting && <div className={cn(mine && "order-last")}><Tick on={selected} /></div>}
-          <div className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in")}>
+          <div
+            className={cn("relative max-w-[80%] rounded-xl px-2 pb-1 pt-1.5 shadow-sm md:max-w-[65%]", mine ? "rounded-tr-sm bg-bubble-out" : "rounded-tl-sm bg-bubble-in", !dragging && "transition-transform duration-200")}
+            style={dx ? { transform: `translateX(${dx}px)` } : undefined}
+          >
             {!m.deleted_for_everyone && (
               <DropdownMenu open={menuOpen} onOpenChange={(open) => actions.setMenu(open ? m.id : null)}>
                 <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
@@ -1461,7 +1582,14 @@ const MessageRow = memo(function MessageRow({ m, day, mine, rep, selecting, sele
               </DropdownMenu>
             )}
             {rep && !m.deleted_for_everyone && (
-              <div className="mb-1 rounded-md border-l-4 border-primary bg-foreground/5 px-2 py-1 text-xs">
+              <div
+                role="button"
+                tabIndex={selecting ? -1 : 0}
+                onClick={selecting ? undefined : (event) => { event.stopPropagation(); actions.jumpTo(rep.id); }}
+                onKeyDown={(event) => { if (!selecting && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); actions.jumpTo(rep.id); } }}
+                className={cn("mb-1 rounded-md border-l-4 border-primary bg-foreground/5 px-2 py-1 text-xs", !selecting && "cursor-pointer hover:bg-foreground/10")}
+                aria-label="Go to the original message"
+              >
                 <div className="font-medium text-primary">{rep.sender_id === meId ? "You" : peerName}</div>
                 <div className="truncate text-muted-foreground">{preview(rep, "")}</div>
               </div>
