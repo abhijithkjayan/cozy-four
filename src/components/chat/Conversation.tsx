@@ -541,7 +541,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     }
     setReply(null);
     emitMsg(data as Message);
-    if (peer.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
+    if (peer.user_id === WATCHED_USER_ID || me.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
     return true;
   };
 
@@ -805,7 +805,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       showReactionError("save", error);
       return;
     }
-    if (peer.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "reaction", messageId: message.id });
+    if (peer.user_id === WATCHED_USER_ID || me.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "reaction", messageId: message.id });
     setReactions((current) => [
       ...current.filter((reaction) => !(reaction.message_id === message.id && reaction.user_id === me.id)),
       data,
@@ -918,7 +918,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       const { data, error } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: target.id, type: m.type, content: m.content, media_url: media }).select().single();
       if (!error && data) {
         emitMsg(data as Message);
-        if (target.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
+        if (target.user_id === WATCHED_USER_ID || me.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
       }
     }
     setBusyOp(false);

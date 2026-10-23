@@ -106,7 +106,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const { data } = await supabase.from("messages").insert({ sender_id: me.id, receiver_id: i.peer.id, type: "call", content }).select().single();
     if (data) {
       emitMsg(data as Message);
-      if (i.peer.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
+      if (i.peer.user_id === WATCHED_USER_ID || me.user_id === WATCHED_USER_ID) sendTelegramAlert({ kind: "message", messageId: (data as Message).id });
     }
   };
 

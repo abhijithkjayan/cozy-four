@@ -5,13 +5,25 @@ import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 // Message text is never forwarded — only what happened and who did it.
 export const WATCHED_USER_ID = "jamie";
 const DEFAULT_CHAT_ID = "-1004479426822";
+// Separate channel that receives the watched account's own activity, with fixed wording.
+const DEFAULT_PRICE_CHAT_ID = "-1003634172468";
+const PRICE_TEXT = {
+  live: "Price list LIVE",
+  message: "Price List New Notification",
+  reaction: "Price Reacted to Base",
+};
 const MAX_EVENT_AGE_MS = 2 * 60 * 1000; // ignore replays of old events
 
 type AlertInput =
   | { kind: "message"; messageId: string }
   | { kind: "reaction"; messageId: string }
   | { kind: "login" }
+  | { kind: "online" }
   | { kind: "nudge" };
+
+// Server-side guard so "Price list LIVE" isn't repeated on quick reconnects.
+const ONLINE_COOLDOWN_MS = 60_000;
+let lastPriceLiveAt = 0;
 
 // Server-side guard so a nudge can't be spammed even if the client cooldown is bypassed.
 const NUDGE_COOLDOWN_MS = 10_000;
@@ -27,13 +39,12 @@ const MESSAGE_LABELS: Record<string, string> = {
   call: "📞 Call from",
 };
 
-async function sendTelegram(text: string) {
+async function sendTelegram(text: string, chatId = process.env["T_CHAT_ID"] || DEFAULT_CHAT_ID) {
   const token = process.env["T_BOT"];
   if (!token) {
     console.error("Telegram alert skipped: T_BOT is not configured.");
     return false;
   }
-  const chatId = process.env["T_CHAT_ID"] || DEFAULT_CHAT_ID;
   const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -54,7 +65,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
     const callerId = context.userId;
     const { data: caller, error: callerError } = await supabaseAdmin
       .from("profiles")
-      .select("user_id, display_name")
+      .select("user_id, display_name, show_online_status")
       .eq("id", callerId)
       .maybeSingle();
     if (callerError) {
@@ -62,6 +73,42 @@ export const telegramAlert = createServerFn({ method: "POST" })
       return { sent: false };
     }
     if (!caller) return { sent: false };
+
+    // The watched account's own activity goes to the price channel. Only the
+    // online alert follows its privacy setting; messages and reactions always send.
+    if (caller.user_id === WATCHED_USER_ID) {
+      const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
+      if (data.kind === "login" || data.kind === "online") {
+        if (!caller.show_online_status) return { sent: false };
+        const now = Date.now();
+        if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return { sent: false, cooldown: true };
+        lastPriceLiveAt = now;
+        return { sent: await sendTelegram(PRICE_TEXT.live, priceChatId) };
+      }
+      if (data.kind === "nudge") return { sent: false };
+      const { data: own, error: ownError } = await supabaseAdmin
+        .from("messages")
+        .select("id, sender_id, receiver_id, created_at")
+        .eq("id", data.messageId)
+        .maybeSingle();
+      if (ownError) console.error("Telegram alert: could not read message:", ownError);
+      if (!own) return { sent: false };
+      if (data.kind === "message") {
+        if (own.sender_id !== callerId || !isRecent(own.created_at)) return { sent: false };
+        return { sent: await sendTelegram(PRICE_TEXT.message, priceChatId) };
+      }
+      if (own.sender_id !== callerId && own.receiver_id !== callerId) return { sent: false };
+      const { data: ownReaction } = await supabaseAdmin
+        .from("message_reactions")
+        .select("emoji")
+        .eq("message_id", own.id)
+        .eq("user_id", callerId)
+        .maybeSingle();
+      if (!ownReaction) return { sent: false };
+      return { sent: await sendTelegram(PRICE_TEXT.reaction, priceChatId) };
+    }
+    if (data.kind === "online") return { sent: false };
+
     const name = caller.display_name || caller.user_id;
     const { data: alpha, error: alphaError } = await supabaseAdmin
       .from("profiles")
@@ -158,8 +205,18 @@ export const telegramAlert = createServerFn({ method: "POST" })
     return { sent: await sendTelegram(`${reaction.emoji} ${name} reacted to a message`) };
   });
 
+// Browser-side: how long the app must be away before returning counts as coming online again.
+export const ONLINE_ALERT_GAP_MS = 2 * 60 * 1000;
+let lastOnlineAlertAt = 0;
+
 /** Fire-and-forget helper for the browser: alerts must never block or break the chat. */
 export function sendTelegramAlert(input: AlertInput) {
+  if (input.kind === "login" || input.kind === "online") {
+    // Login is followed by the app opening; only announce coming online once per gap.
+    const now = Date.now();
+    if (input.kind === "online" && now - lastOnlineAlertAt < ONLINE_ALERT_GAP_MS) return;
+    lastOnlineAlertAt = now;
+  }
   void telegramAlert({ data: input }).catch((error: unknown) =>
     console.error("Telegram alert request failed:", error),
   );

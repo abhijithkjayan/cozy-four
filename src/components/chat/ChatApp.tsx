@@ -5,6 +5,7 @@ import { listTime } from "@/lib/format";
 import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
 import { cn } from "@/lib/utils";
 import { idleState, secureLogout, useGlobalLogout, useIdleLogout } from "@/lib/security";
+import { ONLINE_ALERT_GAP_MS, sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { AvatarCropper } from "./AvatarCropper";
 import { Avatar } from "./Avatar";
 import { CallProvider } from "./Calls";
@@ -196,6 +197,25 @@ export function ChatApp({ userId }: { userId: string }) {
       supabase.from("messages").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("receiver_id", userId).eq("status", "sent").then();
     })();
   }, [userId]);
+
+  // Price channel: announce the watched account opening the app or returning after a while away.
+  const isWatched = me?.user_id === WATCHED_USER_ID;
+  useEffect(() => {
+    if (!isWatched) return;
+    let hiddenAt: number | null = null;
+    const onVisibility = () => {
+      if (document.visibilityState !== "visible") {
+        hiddenAt = Date.now();
+        return;
+      }
+      if (hiddenAt !== null && Date.now() - hiddenAt >= ONLINE_ALERT_GAP_MS) sendTelegramAlert({ kind: "online" });
+      hiddenAt = null;
+    };
+    if (document.visibilityState === "visible") sendTelegramAlert({ kind: "online" });
+    else hiddenAt = 0;
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [isWatched]);
 
   // Presence + last_seen heartbeat
   const currentProfileId = me?.id;
