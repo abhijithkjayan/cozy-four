@@ -13,7 +13,6 @@ import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 // Heavy emoji library: loaded only when someone opens "More emojis…".
 import type { EmojiStyle } from "emoji-picker-react";
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
@@ -97,6 +96,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Pinned messages for this chat (shared by both people), newest pin first
   const [pins, setPins] = useState<Message[]>([]);
+  const pickerBackdropDown = useRef(false);
   const [pinIndex, setPinIndex] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
@@ -1069,6 +1069,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     consumeLongPressClick,
   });
   const shownPins = pins.filter((p) => !p.deleted_for?.includes(me.id));
+  const pickerMessage = reactionPickerMessage ? msgs.find((x) => x.id === reactionPickerMessage) : undefined;
   const status = typing
     ? "typing…"
     : peer.show_online_status
@@ -1492,6 +1493,37 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         </div>
       )}
       {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
+      {pickerMessage && (
+        // Full emoji picker as its own sheet, so it can't be hidden or dismissed by the closing message menu.
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 md:items-center"
+          // Close only on a real tap on the backdrop, not the tap that picked "More emojis…".
+          onPointerDown={(event) => { pickerBackdropDown.current = event.target === event.currentTarget; }}
+          onClick={(event) => { if (pickerBackdropDown.current && event.target === event.currentTarget) setReactionPickerMessage(null); pickerBackdropDown.current = false; }}
+        >
+          <div
+            role="dialog"
+            aria-label="Pick a reaction"
+            className="overflow-hidden rounded-t-2xl border bg-popover shadow-lg md:rounded-2xl"
+            style={{ marginBottom: "env(safe-area-inset-bottom)" }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <Suspense fallback={<div className="flex h-[400px] w-[min(360px,100vw)] items-center justify-center text-sm text-muted-foreground">Loading…</div>}>
+              <EmojiPicker
+                onEmojiClick={(emoji) => {
+                  setReactionPickerMessage(null);
+                  void toggleReaction(pickerMessage, emoji.emoji);
+                }}
+                emojiStyle={"apple" as EmojiStyle}
+                lazyLoadEmojis
+                width="min(360px, 100vw)"
+                height={400}
+                previewConfig={{ showPreview: false }}
+              />
+            </Suspense>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
@@ -1676,8 +1708,6 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
           )}
         </div>
       ) : (
-        <Popover open={pickerOpen} onOpenChange={(open) => actions.setPicker(open ? m.id : null)}>
-          <PopoverAnchor asChild>
             <div
               ref={(element) => actions.register(m.id, element)}
               className={cn("group relative mb-0.5 flex touch-pan-y items-center gap-2 rounded-md transition-colors duration-700 [-webkit-touch-callout:none]", first ? "mt-2" : "mt-0", mine ? "justify-end" : "justify-start", selected && "bg-primary/10", highlighted && "bg-primary/20 duration-150", selecting && "cursor-pointer", fresh && (mine ? "animate-in fade-in slide-in-from-right-4 duration-200" : "animate-in fade-in slide-in-from-left-4 duration-200"))}
@@ -1818,31 +1848,6 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
             )}
           </div>
             </div>
-          </PopoverAnchor>
-          <PopoverContent
-            side="top"
-            align={mine ? "end" : "start"}
-            sideOffset={8}
-            className="w-auto overflow-hidden p-0"
-            onOpenAutoFocus={(event) => event.preventDefault()}
-            // The closing message menu moves focus; that must not dismiss the picker.
-            onFocusOutside={(event) => event.preventDefault()}
-          >
-            <Suspense fallback={<div className="flex h-[400px] w-[min(360px,calc(100vw-2rem))] items-center justify-center text-sm text-muted-foreground">Loading…</div>}>
-            <EmojiPicker
-              onEmojiClick={(emoji) => {
-                actions.setPicker(null);
-                actions.react(m, emoji.emoji);
-              }}
-              emojiStyle={"apple" as EmojiStyle}
-              lazyLoadEmojis
-              width="min(360px, calc(100vw - 2rem))"
-              height={400}
-              previewConfig={{ showPreview: false }}
-            />
-            </Suspense>
-          </PopoverContent>
-        </Popover>
       )}
     </>
   );

@@ -57,6 +57,17 @@ async function sendTelegram(text: string, chatId = process.env["T_CHAT_ID"] || D
 const isRecent = (timestamp: string | null | undefined) =>
   !!timestamp && Date.now() - new Date(timestamp).getTime() < MAX_EVENT_AGE_MS;
 
+// Online means flagged online with a heartbeat in the last minute (the app beats every 30s).
+const isOnlineNow = (profile: { is_online: boolean; last_seen: string | null }) => {
+  const lastSeenAt = profile.last_seen ? Date.parse(profile.last_seen) : Number.NaN;
+  return (
+    profile.is_online &&
+    Number.isFinite(lastSeenAt) &&
+    Date.now() - lastSeenAt >= 0 &&
+    Date.now() - lastSeenAt < 60_000
+  );
+};
+
 export const telegramAlert = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .validator((input: AlertInput) => input)
@@ -74,12 +85,27 @@ export const telegramAlert = createServerFn({ method: "POST" })
     }
     if (!caller) return { sent: false };
 
-    // The watched account's own activity goes to the price channel. Only the
-    // online alert follows its privacy setting; messages and reactions always send.
+    // The watched account's own activity goes to the price channel, but only while the
+    // other person is offline. The online alert also follows the watched account's privacy setting.
     if (caller.user_id === WATCHED_USER_ID) {
       const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
+      const isPersonOnline = async (profileId: string) => {
+        const { data: person, error } = await supabaseAdmin
+          .from("profiles")
+          .select("is_online, last_seen")
+          .eq("id", profileId)
+          .maybeSingle();
+        if (error) console.error("Telegram alert: could not read receiver presence:", error);
+        return !!person && isOnlineNow(person);
+      };
       if (data.kind === "login" || data.kind === "online") {
         if (!caller.show_online_status) return { sent: false };
+        const { data: others, error: othersError } = await supabaseAdmin
+          .from("profiles")
+          .select("is_online, last_seen")
+          .neq("user_id", WATCHED_USER_ID);
+        if (othersError) console.error("Telegram alert: could not read presence:", othersError);
+        if ((others ?? []).some(isOnlineNow)) return { sent: false };
         const now = Date.now();
         if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return { sent: false, cooldown: true };
         lastPriceLiveAt = now;
@@ -95,6 +121,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
       if (!own) return { sent: false };
       if (data.kind === "message") {
         if (own.sender_id !== callerId || !isRecent(own.created_at)) return { sent: false };
+        if (await isPersonOnline(own.receiver_id)) return { sent: false };
         return { sent: await sendTelegram(PRICE_TEXT.message, priceChatId) };
       }
       if (own.sender_id !== callerId && own.receiver_id !== callerId) return { sent: false };
@@ -105,6 +132,8 @@ export const telegramAlert = createServerFn({ method: "POST" })
         .eq("user_id", callerId)
         .maybeSingle();
       if (!ownReaction) return { sent: false };
+      const otherId = own.sender_id === callerId ? own.receiver_id : own.sender_id;
+      if (await isPersonOnline(otherId)) return { sent: false };
       return { sent: await sendTelegram(PRICE_TEXT.reaction, priceChatId) };
     }
     if (data.kind === "online") return { sent: false };
@@ -123,12 +152,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
       console.error("Telegram alert: Alpha profile was not found.");
       return { sent: false };
     }
-    const lastSeenAt = alpha.last_seen ? Date.parse(alpha.last_seen) : Number.NaN;
-    const alphaIsOnline =
-      alpha.is_online &&
-      Number.isFinite(lastSeenAt) &&
-      Date.now() - lastSeenAt >= 0 &&
-      Date.now() - lastSeenAt < 60_000;
+    const alphaIsOnline = isOnlineNow(alpha);
     if (!alpha.telegram_alerts_enabled || alphaIsOnline) return { sent: false };
 
     if (data.kind === "login") {
