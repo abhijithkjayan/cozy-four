@@ -141,6 +141,8 @@ export type Database = {
           type: string
           view_once: boolean
           view_once_opened_at: string | null
+          pinned_at: string | null
+          pinned_by: string | null
         }
         Insert: {
           content?: string | null
@@ -158,6 +160,8 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
+          pinned_at?: string | null
+          pinned_by?: string | null
         }
         Update: {
           content?: string | null
@@ -175,6 +179,8 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
+          pinned_at?: string | null
+          pinned_by?: string | null
         }
         Relationships: [
           {

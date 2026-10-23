@@ -33,6 +33,8 @@ export type Message = {
   deleted_for_everyone: boolean;
   view_once?: boolean;
   view_once_opened_at?: string | null;
+  pinned_at?: string | null;
+  pinned_by?: string | null;
 };
 
 const urlCache = new Map<string, { url: string; exp: number }>();

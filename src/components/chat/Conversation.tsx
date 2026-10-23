@@ -1,6 +1,6 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
+import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, Pin, PinOff, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
 import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -19,6 +19,7 @@ import type { EmojiStyle } from "emoji-picker-react";
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
 const PAGE = 30;
+const MAX_PINS = 3;
 const MAX_IMAGE_ZOOM = 5;
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢", "🙏"];
 const URL_PATTERN = /https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>"']*)?/gi;
@@ -94,6 +95,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const freshIds = useRef(new Set<string>());
   const [msgs, setMsgs] = useState<Message[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
+  // Pinned messages for this chat (shared by both people), newest pin first
+  const [pins, setPins] = useState<Message[]>([]);
+  const [pinIndex, setPinIndex] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [text, setText] = useState("");
@@ -349,10 +353,37 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         return [...list, m];
       });
       if (m.sender_id === peer.id) { setTyping(false); if (m.status !== "read") markRead(); }
+      setPins((list) => {
+        const rest = list.filter((x) => x.id !== m.id);
+        if (!m.pinned_at || m.deleted_for_everyone) return rest.length === list.length ? list : rest;
+        return [...rest, m].sort((a, b) => (b.pinned_at ?? "").localeCompare(a.pinned_at ?? "")).slice(0, MAX_PINS);
+      });
     };
     bus.addEventListener("msg", on);
     return () => bus.removeEventListener("msg", on);
   }, [peer.id, me.id, markRead]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void supabase
+      .from("messages")
+      .select("*")
+      .or(pairFilter(me.id, peer.id))
+      .not("pinned_at", "is", null)
+      .eq("deleted_for_everyone", false)
+      .order("pinned_at", { ascending: false })
+      .limit(MAX_PINS)
+      .then(({ data, error }) => {
+        // Before migration 0014 the column is missing; just show no pins.
+        if (error) console.error("Could not load pinned messages:", error);
+        else if (!cancelled) setPins((data ?? []) as Message[]);
+      });
+    return () => { cancelled = true; };
+  }, [me.id, peer.id]);
+
+  useEffect(() => {
+    if (pinIndex >= pins.length) setPinIndex(0);
+  }, [pins.length, pinIndex]);
 
   useEffect(() => {
     messageIds.current = new Set(msgs.map((message) => message.id));
@@ -740,6 +771,45 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     }
   };
 
+  const togglePin = async (m: Message) => {
+    const pinning = !m.pinned_at;
+    const now = new Date().toISOString();
+    // Like WhatsApp: pinning beyond the limit replaces the oldest pin.
+    const oldest = pinning && pins.length >= MAX_PINS ? pins[pins.length - 1] : undefined;
+    if (oldest) {
+      const { error } = await supabase.from("messages").update({ pinned_at: null, pinned_by: null }).eq("id", oldest.id);
+      if (error) console.error("Could not unpin the oldest message:", error);
+      else emitMsg({ ...oldest, pinned_at: null, pinned_by: null });
+    }
+    const { data, error } = await supabase
+      .from("messages")
+      .update(pinning ? { pinned_at: now, pinned_by: me.id } : { pinned_at: null, pinned_by: null })
+      .eq("id", m.id)
+      .select()
+      .single();
+    if (error) {
+      console.error("Could not update pin:", error);
+      toast.error(/pinned_at/.test(error.message)
+        ? "Pinning is not enabled in the database yet. Apply drizzle/migrations/0014_pinned_messages.sql in Lovable Cloud."
+        : `Could not ${pinning ? "pin" : "unpin"} message: ${error.message}`);
+      return;
+    }
+    emitMsg(data as Message);
+    if (pinning) setPinIndex(0);
+    toast.success(pinning ? "Message pinned" : "Message unpinned");
+  };
+
+  const jumpToPinned = (message: Message) => {
+    if (msgs.some((item) => item.id === message.id)) {
+      messageElements.current.get(message.id)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    } else {
+      keepBottom.current = false;
+      pendingScrollId.current = message.id;
+      setMsgs((current) => [...current, message].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+    }
+    flashMessage(message.id);
+  };
+
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
   const deleteForAll = async (m: Message) => {
     const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id);
@@ -982,6 +1052,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     share: (m, url, title) => void shareAttachment(m, url, title),
     download: (m, url, title) => void downloadAttachment(m, url, title),
     telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, ...(url ? { url } : {}) } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e: unknown) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
+    pin: (m) => void togglePin(m),
     deleteForMe: (m) => void deleteForMe(m),
     deleteForAll: (m) => void deleteForAll(m),
     info: (m) => setInfoMsg(m),
@@ -997,6 +1068,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     cancelPress,
     consumeLongPressClick,
   });
+  const shownPins = pins.filter((p) => !p.deleted_for?.includes(me.id));
   const status = typing
     ? "typing…"
     : peer.show_online_status
@@ -1044,6 +1116,37 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         </DropdownMenu>
       </header>
       )}
+
+      {shownPins.length > 0 && (() => {
+        const pinned = shownPins[pinIndex % shownPins.length]!;
+        return (
+          <div className="flex shrink-0 items-center gap-1 border-b bg-card px-2 md:px-4">
+            <button
+              type="button"
+              onClick={() => {
+                jumpToPinned(pinned);
+                // Tapping again shows the next pin, like WhatsApp
+                setPinIndex((i) => (i + 1) % shownPins.length);
+              }}
+              className="flex min-w-0 flex-1 items-center gap-2 py-2 text-left active:bg-muted/50"
+              aria-label={`Pinned message ${(pinIndex % shownPins.length) + 1} of ${shownPins.length}. Go to message`}
+            >
+              {shownPins.length > 1 && (
+                <span className="flex h-8 flex-col justify-center gap-0.5" aria-hidden>
+                  {shownPins.map((p, i) => (
+                    <span key={p.id} className={cn("w-0.5 flex-1 rounded-full", i === pinIndex % shownPins.length ? "bg-primary" : "bg-muted-foreground/30")} />
+                  ))}
+                </span>
+              )}
+              <Pin className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm">{preview(pinned, me.id)}</span>
+            </button>
+            <button type="button" onClick={() => void togglePin(pinned)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Unpin message" title="Unpin">
+              <PinOff className="h-4 w-4" />
+            </button>
+          </div>
+        );
+      })()}
 
       <div className="relative min-h-0 flex-1">
       <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 md:px-[8%]">
@@ -1408,6 +1511,7 @@ type RowActions = {
   share: (m: Message, url?: string, title?: string) => void;
   download: (m: Message, url?: string, title?: string) => void;
   telegram: (m: Message, url?: string) => void;
+  pin: (m: Message) => void;
   deleteForMe: (m: Message) => void;
   deleteForAll: (m: Message) => void;
   info: (m: Message) => void;
@@ -1643,6 +1747,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.telegram(m, attachment?.url)}><Send className="mr-2 h-4 w-4" />Send to Telegram</DropdownMenuItem>}
+                  <DropdownMenuItem onClick={() => actions.pin(m)}>{m.pinned_at ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{m.pinned_at ? "Unpin" : "Pin"}</DropdownMenuItem>
                   {mine && <DropdownMenuItem onClick={() => actions.info(m)}><Info className="mr-2 h-4 w-4" />Message info</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
                   <DropdownMenuItem onClick={() => actions.deleteForMe(m)}><Trash2 className="mr-2 h-4 w-4" />Delete for me</DropdownMenuItem>
