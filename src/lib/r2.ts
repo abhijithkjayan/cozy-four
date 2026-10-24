@@ -9,17 +9,46 @@ const TYPES: Record<string, string> = { gif: "image/gif", webp: "image/webp", pn
 
 type R2Config = { account: string; accessKey: string; secretKey: string; bucket: string; prefix: string };
 
-function config(): R2Config | null {
-  const env = (...names: string[]) => names.map((n) => process.env[n]?.trim()).find(Boolean) ?? "";
+// Secret names are matched loosely ("Account_ID", "ACCOUNT ID", "account-id" all work).
+const norm = (name: string) => name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+function env(...names: string[]) {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  const wanted = names.map(norm);
+  for (const [name, value] of Object.entries(process.env)) {
+    if (value?.trim() && wanted.includes(norm(name))) return value.trim();
+  }
+  return "";
+}
+
+function readConfig(): { cfg: R2Config | null; missing: string[] } {
   let api: URL | null = null;
-  try { api = new URL(env("S3_API", "R2_S3_API")); } catch { /* not set */ }
-  const account = env("Account_ID", "ACCOUNT_ID", "R2_ACCOUNT_ID") || (api?.hostname.split(".")[0] ?? "");
-  const accessKey = env("R2_ACCESS_KEY_ID", "ACCESS_KEY_ID");
-  const secretKey = env("R2_SECRET_ACCESS_KEY", "SECRET_ACCESS_KEY");
-  const bucket = env("R2_BUCKET", "BUCKET") || decodeURIComponent(api?.pathname.split("/").filter(Boolean)[0] ?? "");
-  if (!account || !accessKey || !secretKey || !bucket) return null;
-  const prefix = (process.env["R2_PREFIX"] ?? "").replace(/^\/+/, "");
-  return { account, accessKey, secretKey, bucket, prefix };
+  const rawApi = env("S3_API", "R2_S3_API", "S3_API_URL", "R2_ENDPOINT");
+  try { if (rawApi) api = new URL(/^https?:\/\//i.test(rawApi) ? rawApi : `https://${rawApi}`); } catch { /* not a URL */ }
+  const account = env("Account_ID", "R2_ACCOUNT_ID", "CLOUDFLARE_ACCOUNT_ID") || (api?.hostname.endsWith(".r2.cloudflarestorage.com") ? api.hostname.split(".")[0]! : "");
+  const accessKey = env("R2_ACCESS_KEY_ID", "ACCESS_KEY_ID", "R2_ACCESS_KEY");
+  const secretKey = env("R2_SECRET_ACCESS_KEY", "SECRET_ACCESS_KEY", "R2_SECRET_KEY");
+  const bucket = env("R2_BUCKET", "BUCKET", "R2_BUCKET_NAME", "BUCKET_NAME") || decodeURIComponent(api?.pathname.split("/").filter(Boolean)[0] ?? "");
+  const missing = [
+    !account && "account ID (Account_ID, or S3_API URL)",
+    !accessKey && "R2_ACCESS_KEY_ID",
+    !secretKey && "R2_SECRET_ACCESS_KEY",
+    !bucket && "bucket name (R2_BUCKET, or S3_API URL ending in /<bucket>)",
+  ].filter((m): m is string => !!m);
+  if (missing.length) return { cfg: null, missing };
+  const prefix = env("R2_PREFIX").replace(/^\/+/, "");
+  return { cfg: { account, accessKey, secretKey, bucket, prefix }, missing };
+}
+
+const config = () => readConfig().cfg;
+
+/** Why R2 isn't usable: the missing pieces plus the related secret NAMES the server can see (never values). */
+function configProblem() {
+  const { missing } = readConfig();
+  const seen = Object.keys(process.env).filter((n) => /R2|S3|ACCOUNT|BUCKET|ACCESS|SECRET/i.test(n) && !/SUPABASE|LOVABLE|GIPHY|KLIPY|TURN/i.test(n));
+  return `R2 is not configured. Missing: ${missing.join(", ")}. Secrets seen: ${seen.length ? seen.join(", ") : "none"}.`;
 }
 
 const enc = new TextEncoder();
@@ -66,7 +95,7 @@ const CACHE_MS = 5 * 60 * 1000;
 /** Every sticker key in the bucket (under R2_PREFIX), sorted, plus a reason when listing failed. */
 export async function listNaughtyKeys(): Promise<Listing> {
   const cfg = config();
-  if (!cfg) return { keys: [], error: "R2 is not configured: set Account_ID (or S3_API), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and the bucket (S3_API URL or R2_BUCKET)." };
+  if (!cfg) return { keys: [], error: configProblem() };
   if (cached && Date.now() - cached.at < CACHE_MS) return { keys: cached.keys };
   const keys: string[] = [];
   let token = "";
