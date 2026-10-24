@@ -18,6 +18,7 @@ type GiphyItem = {
 export type PickedGif = { url: string; preview: string; title: string; video?: boolean; redgifsId?: string };
 
 type GiphyPickerProps = {
+  userId: string;
   onSelect: (item: PickedGif, kind: "gif" | "sticker") => void;
   onClose: () => void;
 };
@@ -116,6 +117,7 @@ const ADULT_DEFAULT = "nude";
 // Others tab keeps the non-adult theme tags, opening on the first one.
 const OTHERS_TAGS = TAGS.filter((t) => t.q && !ADULT_TAGS.includes(t));
 const OTHERS_DEFAULT = OTHERS_TAGS[0]?.q ?? "kiss";
+const ADULT_CACHE_PREFIX = "redgifs-search-v1";
 
 // Game of Thrones tab (GIPHY and KLIPY only). Empty query = the whole series.
 const GOT_ALL = "game of thrones";
@@ -163,6 +165,44 @@ const toTile = (item: GiphyItem): Tile =>
         send: { url: item.images.original.url, preview: item.images.fixed_width_small.url, title: item.title },
       };
 
+function adultCacheKey(userId: string, query: string, page: number) {
+  return `${ADULT_CACHE_PREFIX}:${encodeURIComponent(userId)}:${page}:${encodeURIComponent(query)}`;
+}
+
+function isCachedAdultItem(value: unknown): value is GiphyItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<GiphyItem>;
+  return (
+    typeof item.id === "string" &&
+    typeof item.title === "string" &&
+    typeof item.video === "string" &&
+    typeof item.redgifsId === "string" &&
+    /^[a-z0-9]+$/i.test(item.redgifsId) &&
+    !!item.images &&
+    typeof item.images.fixed_width?.url === "string" &&
+    typeof item.images.fixed_width_small?.url === "string" &&
+    typeof item.images.original?.url === "string"
+  );
+}
+
+function readCachedAdultItems(userId: string, query: string, page: number): GiphyItem[] {
+  try {
+    const cached: unknown = JSON.parse(localStorage.getItem(adultCacheKey(userId, query, page)) ?? "null");
+    return Array.isArray(cached) ? cached.filter(isCachedAdultItem) : [];
+  } catch (error) {
+    console.warn("Could not read saved RedGifs results:", error);
+    return [];
+  }
+}
+
+function saveAdultItems(userId: string, query: string, page: number, items: GiphyItem[]) {
+  try {
+    localStorage.setItem(adultCacheKey(userId, query, page), JSON.stringify(items));
+  } catch (error) {
+    console.warn("Could not save RedGifs results on this device:", error);
+  }
+}
+
 /** RedGifs results, from the device first and the server if the device can't reach RedGifs. */
 async function loadAdult(query: string, page: number): Promise<{ items: GiphyItem[]; error: string | null }> {
   // Server only: RedGifs' CORS blocks its search for browsers on other sites.
@@ -191,7 +231,7 @@ function TileImage({ tile }: { tile: Tile }) {
   return src ? <img src={src} alt={tile.title || "GIF"} loading="lazy" onError={onError} className="h-full w-full object-cover" /> : null;
 }
 
-export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
+export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
   const [tab, setTab] = useState<Tab>("gif");
   const [query, setQuery] = useState("");
   const [input, setInput] = useState("");
@@ -213,16 +253,31 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
         : giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
       withAdult ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
     ]);
-    if (pageNumber === 0 && adult.error) console.warn("RedGifs:", adult.error);
+    if (withAdult) {
+      const cached = readCachedAdultItems(userId, q, pageNumber);
+      if (adult.items.length) {
+        saveAdultItems(userId, q, pageNumber, adult.items);
+        return adult.items.map(toTile);
+      }
+      if (cached.length) return cached.map(toTile);
+      if (adult.error) throw new Error(adult.error);
+    }
     return ((withAdult ? adult.items : result.items) as GiphyItem[]).map(toTile);
   };
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     setError(null);
     setPage(0);
     setHasMore(true);
+    const cached =
+      tab === "adult" ? readCachedAdultItems(userId, query || ADULT_DEFAULT, 0).map(toTile) : [];
+    if (cached.length) {
+      setItems(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     fetchPage(0)
       .then((tiles) => {
         if (!active) return;
@@ -234,8 +289,8 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
     return () => {
       active = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPage only depends on query and tab
-  }, [query, tab]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPage depends on query, tab, and userId
+  }, [query, tab, userId]);
 
   const loadMore = () => {
     if (loadingMore) return;
@@ -286,9 +341,11 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["adult", "Naughty"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
-            <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
-          ))}
+          {/* Naughty has no tab of its own: it is the last chip under Others, so Others stays highlighted. */}
+          {([["gif", "GIFs"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => {
+            const active = tab === value || (value === "others" && tab === "adult");
+            return <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${active ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>;
+          })}
         </div>
             <form onSubmit={(e) => { e.preventDefault(); setQuery(input.trim()); }} className="m-3 flex shrink-0 items-center gap-2 rounded-lg bg-muted px-3">
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -298,9 +355,17 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               {tags.map((t) => (
                 <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
               ))}
+              {tab === "others" && (
+                <button type="button" onClick={() => switchTab("adult")} className="shrink-0 whitespace-nowrap rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted/70">Naughty</button>
+              )}
             </div>}
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
+              {!loading && error && (
+                <p role="status" className="py-8 text-center text-sm text-muted-foreground">
+                  {error}
+                </p>
+              )}
               {!loading && !error && <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {items.map((item) => (
                   <button key={item.id} onClick={() => onSelect(item.send, tab === "sticker" ? "sticker" : "gif")} className="relative aspect-square overflow-hidden rounded-lg bg-muted focus:outline-none focus:ring-2 focus:ring-ring" aria-label={`Send ${item.title || "GIF"}`}>

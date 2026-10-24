@@ -76,5 +76,8 @@ npm run dev
 
 The picker has a separate 18+ tab that searches RedGifs through its API. It links to provider-hosted
 media instead of scraping, bulk-downloading, or mirroring files; sending a result stores its source
-link in chat history. Follow RedGifs' terms and content policies. The in-app age prompt is an
-acknowledgement, not identity or age verification.
+link in chat history. The server obtains and refreshes RedGifs temporary API tokens automatically;
+no permanent developer key is required. Naughty search results are cached on the device for the
+signed-in user and reused if RedGifs is temporarily unavailable; playable clips still load from
+RedGifs. Follow RedGifs' terms and content policies. The in-app age prompt is an acknowledgement,
+not identity or age verification.

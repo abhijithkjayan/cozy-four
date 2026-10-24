@@ -85,44 +85,53 @@ async function fromGiphy(query: string, kind: "gif" | "sticker", page: number): 
 // IP address and browser they were requested for, so every call passes the viewer's IP and
 // user agent (user-addr / user-agent); links fetched for the server itself would fail with 403.
 const REDGIFS_API = "https://api.redgifs.com/v2";
-let redgifsToken: { value: string; agent: string; expiresAt: number } | null = null;
+type RedgifsToken = { value: string; expiresAt: number };
+const redgifsTokens = new Map<string, RedgifsToken>();
+const redgifsLogins = new Map<string, Promise<RedgifsToken>>();
 
 // RedGifs' search can't be called from a browser on another site (its CORS only allows
-// www.redgifs.com), so it runs here. Anonymous "temporary" tokens are rate limited per IP, and this
-// server shares Cloudflare's IPs with many other sites, so it gets HTTP 429 a lot. With RedGifs API
-// keys (REDGIFS_CLIENT_ID / REDGIFS_CLIENT_SECRET, from RedGifs' developer access) the server
-// signs in as its own client instead.
-async function redgifsLogin(headers: Record<string, string>, agent: string) {
-  const clientId = process.env["REDGIFS_CLIENT_ID"];
-  const clientSecret = process.env["REDGIFS_CLIENT_SECRET"];
-  if (clientId && clientSecret) {
-    const res = await fetch(`${REDGIFS_API}/oauth/client`, {
-      method: "POST",
-      headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
-    });
-    if (!res.ok) throw new Error(`RedGifs client sign-in failed [${res.status}]: ${(await res.text()).slice(0, 160)}`);
-    const body = (await res.json()) as { access_token?: string; token?: string; expires_in?: number };
-    const value = body.access_token || body.token;
-    if (!value) throw new Error("RedGifs client sign-in returned no token");
-    // Refresh 10 minutes before it runs out, as RedGifs recommends.
-    const lifeMs = (Number(body.expires_in) || 3600) * 1000;
-    return { value, agent, expiresAt: Date.now() + Math.max(60_000, lifeMs - 10 * 60 * 1000) };
-  }
+// www.redgifs.com), so temporary-token login and refresh happen here.
+async function redgifsLogin(headers: Record<string, string>): Promise<RedgifsToken> {
   const res = await fetch(`${REDGIFS_API}/auth/temporary`, { headers });
+  if (res.status === 429) await recordRedgifsRateLimit(res);
   if (!res.ok) throw new Error(`RedGifs auth failed [${res.status}]: ${await res.text()}`);
-  const body = (await res.json()) as { token?: string };
+  const body = (await res.json()) as { token?: string; expires_in?: number };
   if (!body.token) throw new Error("RedGifs auth returned no token");
-  return { value: body.token, agent, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
+  let tokenExpiry: number | undefined;
+  try {
+    const payload = body.token.split(".")[1];
+    if (payload) {
+      const decoded = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as {
+        exp?: number;
+      };
+      if (typeof decoded.exp === "number") tokenExpiry = decoded.exp * 1000;
+    }
+  } catch {
+    tokenExpiry = undefined;
+  }
+  const expiresIn = Number(body.expires_in);
+  const expiresAt =
+    tokenExpiry ??
+    (Number.isFinite(expiresIn) && expiresIn > 0
+      ? Date.now() + expiresIn * 1000
+      : Date.now() + 60 * 60 * 1000);
+  return { value: body.token, expiresAt: expiresAt - 60_000 };
 }
 
-// Search results are reused for 20 minutes per viewer (links are tied to the viewer's IP),
-// so browsing back and forth or reopening the picker doesn't spend more requests.
-const REDGIFS_CACHE_MS = 20 * 60 * 1000;
+// Search results are reused for 2 hours per viewer (links are tied to the viewer's IP), so
+// browsing back and forth or reopening the picker doesn't spend more requests. When RedGifs is
+// rate limiting, the last results for that search are served instead, however old.
+const REDGIFS_CACHE_MS = 2 * 60 * 60 * 1000;
 const redgifsCache = new Map<string, { at: number; items: Out[] }>();
 // After a 429 the server waits out RedGifs' requested delay instead of retrying straight away.
 let redgifsBlockedUntil = 0;
 type Viewer = { ip: string; agent: string };
+
+async function recordRedgifsRateLimit(res: Response) {
+  const body = (await res.clone().json().catch(() => null)) as { error?: { delay?: number } } | null;
+  const delay = Math.min(Math.max(Number(body?.error?.delay) || 60, 10), 600);
+  redgifsBlockedUntil = Date.now() + delay * 1000;
+}
 
 function viewer(): Viewer {
   try {
@@ -138,25 +147,44 @@ function viewer(): Viewer {
   }
 }
 
+async function getRedgifsToken(headers: Record<string, string>, agent: string): Promise<RedgifsToken> {
+  const cached = redgifsTokens.get(agent);
+  if (cached && Date.now() < cached.expiresAt) return cached;
+
+  const pending = redgifsLogins.get(agent);
+  if (pending) return pending;
+
+  const login = redgifsLogin(headers);
+  redgifsLogins.set(agent, login);
+  try {
+    const token = await login;
+    redgifsTokens.set(agent, token);
+    if (redgifsTokens.size > 100) {
+      const oldestAgent = redgifsTokens.keys().next().value;
+      if (oldestAgent) redgifsTokens.delete(oldestAgent);
+    }
+    return token;
+  } finally {
+    if (redgifsLogins.get(agent) === login) redgifsLogins.delete(agent);
+  }
+}
+
 async function redgifsFetch(path: string, who: Viewer, retry = true): Promise<Response> {
   const waitSecs = Math.ceil((redgifsBlockedUntil - Date.now()) / 1000);
   if (waitSecs > 0) throw new Error(`rate limited, try again in ${waitSecs}s`);
   const headers = { "User-Agent": who.agent, Referer: "https://www.redgifs.com/", Origin: "https://www.redgifs.com" };
-  if (!redgifsToken || redgifsToken.agent !== who.agent || Date.now() > redgifsToken.expiresAt) {
-    redgifsToken = await redgifsLogin(headers, who.agent);
-  }
+  const token = await getRedgifsToken(headers, who.agent);
   const sep = path.includes("?") ? "&" : "?";
   const forViewer = new URLSearchParams({ "user-agent": who.agent, ...(who.ip ? { "user-addr": who.ip } : {}) });
   const res = await fetch(`${REDGIFS_API}${path}${sep}${forViewer}`, {
-    headers: { ...headers, Authorization: `Bearer ${redgifsToken.value}` },
+    headers: { ...headers, Authorization: `Bearer ${token.value}` },
   });
   if ((res.status === 401 || res.status === 403) && retry) {
-    redgifsToken = null;
+    if (redgifsTokens.get(who.agent)?.value === token.value) redgifsTokens.delete(who.agent);
     return redgifsFetch(path, who, false);
   }
   if (res.status === 429) {
-    const body = (await res.clone().json().catch(() => null)) as { error?: { delay?: number } } | null;
-    redgifsBlockedUntil = Date.now() + Math.min(Math.max(Number(body?.error?.delay) || 60, 10), 600) * 1000;
+    await recordRedgifsRateLimit(res);
   }
   return res;
 }
@@ -185,14 +213,29 @@ async function fromRedgifs(query: string, page: number): Promise<Out[]> {
   const key = `${who.ip}|${query}|${page}`;
   const cached = redgifsCache.get(key);
   if (cached && Date.now() - cached.at < REDGIFS_CACHE_MS) return cached.items;
-  const res = await redgifsFetch(`/gifs/search?${params}`, who);
+  // Last results for this search from anyone, for when RedGifs refuses to answer.
+  const stale = () => {
+    if (cached?.items.length) return cached.items;
+    for (const [k, v] of redgifsCache) if (k.endsWith(`|${query}|${page}`) && v.items.length) return v.items;
+    return null;
+  };
+  let res: Response;
+  try {
+    res = await redgifsFetch(`/gifs/search?${params}`, who);
+  } catch (error) {
+    const old = stale();
+    if (old) return old;
+    throw error;
+  }
   if (!res.ok) {
+    const old = stale();
+    if (old) return old;
     const detail = (await res.text()).replace(/\s+/g, " ").slice(0, 160);
     throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   const body = (await res.json()) as { gifs?: RedgifsGif[] };
   const items = (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
-  if (redgifsCache.size > 200) redgifsCache.clear();
+  if (redgifsCache.size > 300) redgifsCache.delete(redgifsCache.keys().next().value!);
   redgifsCache.set(key, { at: Date.now(), items });
   return items;
 }
@@ -263,4 +306,3 @@ export const giphySearch = createServerFn({ method: "GET" })
     }
     return { items: out, redgifsError };
   });
-

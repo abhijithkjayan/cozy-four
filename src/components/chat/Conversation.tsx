@@ -1578,7 +1578,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <video src={videoViewer} autoPlay playsInline controls controlsList="nodownload" disablePictureInPicture onContextMenu={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()} className="max-h-full max-w-full rounded-lg" />
         </div>
       )}
-      {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
+      {giphyOpen && <GiphyPicker userId={me.id} onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
       {pickerMessage && (
         // Full emoji picker as its own sheet, so it can't be hidden or dismissed by the closing message menu.
         <div
@@ -1988,30 +1988,24 @@ function parseAttachment(content: string | null): Attachment | null {
   try { return JSON.parse(content) as Attachment; } catch { return null; }
 }
 
-/** Looping muted clip (18+ GIFs are MP4s). If the saved link has expired, ask for a fresh one once. */
+/**
+ * RedGifs clips play in RedGifs' own embedded player, which loads straight on the viewer's device:
+ * no server call, no expiring links, no rate limit. Other video GIFs play as a looping muted video.
+ */
 function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: string | undefined; redgifsId?: string | undefined; title?: string | undefined }) {
-  const [src, setSrc] = useState(url);
-  const [refreshed, setRefreshed] = useState(false);
   const [failed, setFailed] = useState(false);
-  const onError = () => {
-    if (refreshed || !redgifsId) { setFailed(true); return; }
-    setRefreshed(true);
-    void freshRedgifs(redgifsId)
-      .then((fresh) => (fresh?.video ? setSrc(fresh.video) : setFailed(true)))
-      .catch(() => setFailed(true));
-  };
-  if (failed && redgifsId) return <RedgifsEmbed id={redgifsId.toLowerCase()} />;
+  if (redgifsId) return <RedgifsEmbed id={redgifsId.toLowerCase()} />;
   if (failed) return null; // No error text for GIFs: a clip that can't load just isn't shown.
   return (
     <video
-      src={src}
+      src={url}
       poster={poster}
       autoPlay
       loop
       muted
       playsInline
       preload="metadata"
-      onError={onError}
+      onError={() => setFailed(true)}
       aria-label={title || "GIF"}
       className="block max-h-72 max-w-64 rounded-lg bg-muted object-cover"
     />
