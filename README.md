@@ -71,3 +71,10 @@ cd <repository-name>
 npm i
 npm run dev
 ```
+
+## Adult GIF library
+
+The picker has a separate 18+ tab that searches RedGifs through its API. It links to provider-hosted
+media instead of scraping, bulk-downloading, or mirroring files; sending a result stores its source
+link in chat history. Follow RedGifs' terms and content policies. The in-app age prompt is an
+acknowledgement, not identity or age verification.

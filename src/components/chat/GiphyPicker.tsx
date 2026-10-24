@@ -22,7 +22,7 @@ type GiphyPickerProps = {
   onClose: () => void;
 };
 
-type Tab = "gif" | "got" | "others" | "sticker";
+type Tab = "gif" | "adult" | "got" | "others" | "sticker";
 // One grid item for every source: a still or animated preview, plus what gets sent.
 type Tile = { id: string; title: string; thumb: string; video: boolean; send: PickedGif };
 
@@ -75,8 +75,46 @@ const TAGS = [
   { label: "Funny", q: "funny" },
   { label: "Reactions", q: "reaction" },
 ];
-// Others tab: every theme tag (Kiss through Movie love scene), opening on the first one.
-const OTHERS_TAGS = TAGS.filter((t) => t.q);
+const ADULT_TAGS = [
+  { label: "Trending", q: "" },
+  { label: "Sex", q: "sex" },
+  { label: "Porn", q: "porn" },
+  ...TAGS.filter((t) =>
+    [
+      "Sexy",
+      "Nude",
+      "Erotic",
+      "Naked couple",
+      "Striptease",
+      "POV",
+      "Lesbian",
+      "Hardcore",
+      "Blowjob",
+      "Anal",
+      "Creampie",
+      "Cumshot",
+      "Seductive",
+      "Hot",
+      "Naughty",
+      "Passionate",
+      "Sensual",
+      "Make out",
+      "Making love",
+      "Bed",
+      "Lingerie",
+      "Teasing",
+      "Shower",
+      "Morning",
+      "Rough",
+      "Oral",
+      "Riding",
+      "Amateur couple",
+    ].includes(t.label),
+  ),
+];
+const ADULT_DEFAULT = "nude";
+// Others tab keeps the non-adult theme tags, opening on the first one.
+const OTHERS_TAGS = TAGS.filter((t) => t.q && !ADULT_TAGS.includes(t));
 const OTHERS_DEFAULT = OTHERS_TAGS[0]?.q ?? "kiss";
 
 // Game of Thrones tab (GIPHY and KLIPY only). Empty query = the whole series.
@@ -168,24 +206,19 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [hasMore, setHasMore] = useState(true);
 
   const [adultNote, setAdultNote] = useState<string | null>(null);
+  const [adultAccessConfirmed, setAdultAccessConfirmed] = useState(false);
+  const [showAdultNotice, setShowAdultNotice] = useState(false);
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
-    const q = tab === "got" ? query || GOT_ALL : tab === "others" ? query || OTHERS_DEFAULT : query || DEFAULT_QUERY;
-    const withAdult = tab === "gif" || tab === "others";
+    const q = tab === "got" ? query || GOT_ALL : tab === "others" ? query || OTHERS_DEFAULT : tab === "adult" ? query || ADULT_DEFAULT : query || DEFAULT_QUERY;
+    const withAdult = tab === "adult";
     const [result, adult] = await Promise.all([
-      giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
+      withAdult
+        ? Promise.resolve({ items: [] as GiphyItem[] })
+        : giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
       withAdult ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
     ]);
-    // Explains an empty adult section instead of failing silently.
     if (pageNumber === 0) setAdultNote(adult.error);
-    // Adult clips first in each round so they aren't buried under ordinary GIFs.
-    const base = result.items as GiphyItem[];
-    const mixed: GiphyItem[] = [];
-    for (let a = 0, b = 0; a < adult.items.length || b < base.length; a++, b += 2) {
-      const clip = adult.items[a];
-      if (clip) mixed.push(clip);
-      mixed.push(...base.slice(b, b + 2));
-    }
-    return mixed.map(toTile);
+    return ((withAdult ? adult.items : result.items) as GiphyItem[]).map(toTile);
   };
 
   useEffect(() => {
@@ -225,15 +258,29 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
       .finally(() => setLoadingMore(false));
   };
 
-  const switchTab = (value: Tab) => {
+  const updateTab = (value: Tab) => {
     setTab(value);
     setInput("");
-    setQuery(value === "others" ? OTHERS_DEFAULT : "");
+    setQuery(value === "others" ? OTHERS_DEFAULT : value === "adult" ? ADULT_DEFAULT : "");
     setItems([]);
   };
 
+  const switchTab = (value: Tab) => {
+    if (value === "adult" && !adultAccessConfirmed) {
+      setShowAdultNotice(true);
+      return;
+    }
+    updateTab(value);
+  };
+
+  const confirmAdultAccess = () => {
+    setAdultAccessConfirmed(true);
+    setShowAdultNotice(false);
+    updateTab("adult");
+  };
+
   // GIFs is trending + search only; the theme tags live under Others.
-  const tags = tab === "gif" ? [] : tab === "got" ? GOT_TAGS : tab === "others" ? OTHERS_TAGS : TAGS.slice(0, 13);
+  const tags = tab === "adult" ? ADULT_TAGS : tab === "gif" ? [] : tab === "got" ? GOT_TAGS : tab === "others" ? OTHERS_TAGS : TAGS.slice(0, 13);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center" onClick={onClose}>
@@ -243,7 +290,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
+          {([["gif", "GIFs"], ["adult", "Adult 18+"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
           ))}
         </div>
@@ -257,7 +304,12 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               ))}
             </div>}
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">Adult GIFs could not load right now (RedGifs {adultNote}). Showing other GIFs.</p>}
+              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">RedGifs is unavailable ({adultNote}).</p>}
+              {tab === "adult" && (
+                <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                  External 18+ results are linked from RedGifs, not copied into app storage.
+                </p>
+              )}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
               {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
@@ -276,8 +328,28 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
                 </button>
               )}
             </div>
-        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">{tab === "gif" || tab === "others" ? "Powered by KLIPY, GIPHY & RedGifs" : "Powered by KLIPY & GIPHY"}</div>
+        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">
+          {tab === "adult" ? "Powered by RedGifs" : "Powered by KLIPY & GIPHY"}
+        </div>
       </div>
+      {showAdultNotice && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4" onClick={(event) => event.stopPropagation()}>
+          <section role="dialog" aria-modal="true" aria-labelledby="adult-gif-notice-title" className="w-full max-w-sm rounded-2xl bg-card p-5 shadow-xl">
+            <h2 id="adult-gif-notice-title" className="text-lg font-semibold">Adult content (18+)</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              This library loads mature GIFs from an external provider. Continue only if you are at least 18 years old.
+            </p>
+            <div className="mt-5 flex justify-end gap-2">
+              <button type="button" onClick={() => setShowAdultNotice(false)} className="rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted">
+                Go back
+              </button>
+              <button type="button" onClick={confirmAdultAccess} className="rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+                I am 18 or older
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
