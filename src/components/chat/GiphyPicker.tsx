@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
 import { giphySearch } from "@/lib/giphy.functions";
-import { naughtyStickers } from "@/lib/naughty.functions";
+import { naughtyStickers, ROOT_FOLDER } from "@/lib/naughty.functions";
 
 type GiphyItem = {
   id: string;
@@ -49,6 +49,8 @@ const TAGS = [
 // Others tab: the theme tags, opening on the first one.
 const OTHERS_TAGS = TAGS.filter((t) => t.q);
 const OTHERS_DEFAULT = OTHERS_TAGS[0]?.q ?? "kiss";
+// Last chip under Others: opens the NAUGHTY stickers (private R2 bucket), one tab per bucket folder.
+const NAUGHTY_LABEL = "NAUGHTY";
 
 // Game of Thrones tab (GIPHY and KLIPY only). Empty query = the whole series.
 const GOT_ALL = "game of thrones";
@@ -89,7 +91,9 @@ const toTile = (item: GiphyItem): Tile => ({
 /** Preview tile; one that can't load stays blank instead of showing a broken image. */
 function TileImage({ tile }: { tile: Tile }) {
   const [src, setSrc] = useState(tile.thumb);
-  return src ? <img src={src} alt={tile.title || "GIF"} loading="lazy" onError={() => setSrc("")} className="h-full w-full object-cover" /> : null;
+  if (src) return <img src={src} alt={tile.title || "GIF"} loading="lazy" onError={() => setSrc("")} className="h-full w-full object-cover" />;
+  // NAUGHTY tiles name the file when it can't load, so a broken bucket link is visible.
+  return tile.id.startsWith("r2-") ? <span className="flex h-full w-full items-center justify-center p-1 text-center text-[10px] text-destructive">{tile.title || "Not loaded"}</span> : null;
 }
 
 export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
@@ -105,13 +109,14 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
   // NAUGHTY stickers come from the private R2 bucket; the tab shows a warning every time it is opened.
   const [naughtyWarn, setNaughtyWarn] = useState(false);
   const [naughtyFolders, setNaughtyFolders] = useState<string[]>([]);
-  const [prevTab, setPrevTab] = useState<Tab>("gif");
+  const [naughtyFolder, setNaughtyFolder] = useState("");
 
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
     if (tab === "naughty") {
-      const folder = query.startsWith("folder:") ? query.slice(7) : "";
-      const result = await naughtyStickers({ data: { query: folder ? "" : query, folder, page: pageNumber } });
+      const result = await naughtyStickers({ data: { query, folder: naughtyFolder, page: pageNumber } });
       setNaughtyFolders(result.folders);
+      if (result.folder !== naughtyFolder) setNaughtyFolder(result.folder);
+      if (result.error && result.items.length === 0) throw new Error(result.error);
       return result.items.map((s) => ({ id: s.id, title: s.title, thumb: s.url, send: { url: s.url, preview: s.url, title: s.title } }));
     }
     const q = tab === "got" ? query || GOT_ALL : tab === "others" ? query || OTHERS_DEFAULT : query || DEFAULT_QUERY;
@@ -132,13 +137,13 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
         setItems(tiles);
         setHasMore(tiles.length > 0);
       })
-      .catch(() => active && setError(tab === "naughty" ? "Could not load NAUGHTY stickers." : "Could not load GIFs."))
+      .catch((e: unknown) => active && setError(tab === "naughty" ? `Could not load NAUGHTY stickers. ${e instanceof Error ? e.message : ""}`.trim() : "Could not load GIFs."))
       .finally(() => active && setLoading(false));
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPage depends on query, tab, and userId
-  }, [query, tab, userId, naughtyWarn]);
+  }, [query, tab, userId, naughtyWarn, naughtyFolder]);
 
   const loadMore = () => {
     if (loadingMore) return;
@@ -164,18 +169,16 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
     setItems([]);
   };
 
-  const switchTab = (value: Tab) => {
-    if (value === "naughty") {
-      if (tab !== "naughty") setPrevTab(tab);
-      setNaughtyWarn(true);
-    }
-    updateTab(value);
+  const switchTab = updateTab;
+  // NAUGHTY lives under Others and warns every time it is opened.
+  const openNaughty = () => {
+    setNaughtyWarn(true);
+    updateTab("naughty");
   };
+  const othersTab = tab === "others" || tab === "naughty";
 
   // GIFs is trending + search only; the theme tags live under Others.
-  const tags = tab === "gif" ? [] : tab === "got" ? GOT_TAGS : tab === "others" ? OTHERS_TAGS
-    : tab === "naughty" ? (naughtyFolders.length > 1 ? [{ label: "All", q: "" }, ...naughtyFolders.map((f) => ({ label: f, q: `folder:${f}` }))] : [])
-    : TAGS.slice(0, 13);
+  const tags = tab === "gif" ? [] : tab === "got" ? GOT_TAGS : othersTab ? OTHERS_TAGS : TAGS.slice(0, 13);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center" onClick={onClose}>
@@ -185,12 +188,26 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"], ["naughty", "NAUGHTY"]] as const).map(([value, label]) => {
-            const active = tab === value;
-            const naughty = value === "naughty";
-            return <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${active ? (naughty ? "border-destructive text-destructive" : "border-primary text-primary") : naughty ? "border-transparent text-destructive/80" : "border-transparent text-muted-foreground"}`}>{label}</button>;
+          {([["gif", "GIFs"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => {
+            const active = tab === value || (value === "others" && othersTab);
+            return <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${active ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>;
           })}
         </div>
+        {othersTab && (
+          <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 py-3 [scrollbar-width:none]">
+            {tags.map((t) => (
+              <button key={t.label} type="button" onClick={() => { if (tab !== "others") updateTab("others"); setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${tab === "others" && query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
+            ))}
+            <button type="button" onClick={openNaughty} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold ${tab === "naughty" ? "bg-destructive text-destructive-foreground" : "bg-destructive/10 text-destructive hover:bg-destructive/20"}`}>{NAUGHTY_LABEL}</button>
+          </div>
+        )}
+        {tab === "naughty" && !naughtyWarn && naughtyFolders.length > 0 && (
+          <div className="flex shrink-0 gap-1 overflow-x-auto border-b px-3 [scrollbar-width:none]">
+            {naughtyFolders.map((f) => (
+              <button key={f} type="button" onClick={() => { setNaughtyFolder(f); setInput(""); setQuery(""); }} className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium ${naughtyFolder === f ? "border-destructive text-destructive" : "border-transparent text-muted-foreground"}`}>{f === ROOT_FOLDER ? "More" : f}</button>
+            ))}
+          </div>
+        )}
         {tab === "naughty" && naughtyWarn ? (
           <div role="alertdialog" aria-labelledby="naughty-warn-title" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
             <TriangleAlert className="h-12 w-12 text-destructive" />
@@ -198,7 +215,7 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
             <p className="text-base font-semibold">HANDLE at Your RISK</p>
             <p className="max-w-xs text-sm text-muted-foreground">Explicit 18+ stickers. Open only if you are an adult and the person you are chatting with is fine with it.</p>
             <div className="mt-2 flex gap-2">
-              <button type="button" onClick={() => { setNaughtyWarn(false); updateTab(prevTab); }} className="rounded-lg bg-muted px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted/70">Go back</button>
+              <button type="button" onClick={() => { setNaughtyWarn(false); updateTab("others"); }} className="rounded-lg bg-muted px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted/70">Go back</button>
               <button type="button" onClick={() => setNaughtyWarn(false)} className="rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90">I understand, show</button>
             </div>
           </div>
@@ -207,7 +224,7 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={input} onChange={(e) => setInput(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder={tab === "naughty" ? "Search NAUGHTY stickers" : "Search GIFs"} aria-label={tab === "naughty" ? "Search NAUGHTY stickers" : "Search GIFs"} />
             </form>
-            {tags.length > 0 && <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 pb-3 pt-0.5 [scrollbar-width:none]">
+            {!othersTab && tags.length > 0 && <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 pb-3 pt-0.5 [scrollbar-width:none]">
               {tags.map((t) => (
                 <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
               ))}

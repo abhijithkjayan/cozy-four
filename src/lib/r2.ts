@@ -60,18 +60,24 @@ const unxml = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").repla
 
 // The bucket only changes when new GIFs are uploaded, so the key list is cached briefly per isolate.
 let cached: { at: number; keys: string[] } | null = null;
+type Listing = { keys: string[]; error?: string };
 const CACHE_MS = 5 * 60 * 1000;
 
-/** Every sticker key in the bucket (under R2_PREFIX), sorted. Empty when R2 is not configured. */
-export async function listNaughtyKeys(): Promise<string[]> {
+/** Every sticker key in the bucket (under R2_PREFIX), sorted, plus a reason when listing failed. */
+export async function listNaughtyKeys(): Promise<Listing> {
   const cfg = config();
-  if (!cfg) return [];
-  if (cached && Date.now() - cached.at < CACHE_MS) return cached.keys;
+  if (!cfg) return { keys: [], error: "R2 is not configured: set Account_ID (or S3_API), R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and the bucket (S3_API URL or R2_BUCKET)." };
+  if (cached && Date.now() - cached.at < CACHE_MS) return { keys: cached.keys };
   const keys: string[] = [];
   let token = "";
   for (let i = 0; i < 50; i++) {
     const res = await r2Get(cfg, "", { "list-type": "2", "max-keys": "1000", ...(cfg.prefix ? { prefix: cfg.prefix } : {}), ...(token ? { "continuation-token": token } : {}) });
-    if (!res.ok) { console.error(`R2 list failed [${res.status}]: ${await res.text()}`); break; }
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`R2 list failed [${res.status}]: ${body}`);
+      const code = /<Code>([^<]*)<\/Code>/.exec(body)?.[1] ?? "";
+      return { keys, error: `R2 list failed (${res.status}${code ? ` ${code}` : ""}) for bucket "${cfg.bucket}".` };
+    }
     const xml = await res.text();
     for (const m of xml.matchAll(/<Key>([\s\S]*?)<\/Key>/g)) {
       const key = unxml(m[1]!);
@@ -82,7 +88,7 @@ export async function listNaughtyKeys(): Promise<string[]> {
   }
   keys.sort();
   cached = { at: Date.now(), keys };
-  return keys;
+  return { keys };
 }
 
 /** Key relative to R2_PREFIX, used for folder tags and the public /naughty/ path. */
@@ -102,7 +108,12 @@ export async function serveNaughty(request: Request): Promise<Response> {
   }
   const key = cfg.prefix ? `${cfg.prefix.replace(/\/+$/, "")}/${rel}` : rel;
   const res = await r2Get(cfg, key);
-  if (!res.ok || !res.body) return new Response("Not found", { status: 404 });
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => "");
+    console.error(`R2 get failed [${res.status}] ${key}: ${body}`);
+    const code = /<Code>([^<]*)<\/Code>/.exec(body)?.[1] ?? "";
+    return new Response(`R2 ${res.status} ${code}`.trim(), { status: res.status === 404 ? 404 : 502 });
+  }
   const ext = rel.slice(rel.lastIndexOf(".") + 1).toLowerCase();
   return new Response(res.body, {
     headers: {
