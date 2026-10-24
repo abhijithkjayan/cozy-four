@@ -545,8 +545,13 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setGalleryMessages([...(media.data ?? []), ...(links.data ?? [])] as Message[]);
   };
 
-  // View-once media never appears in the gallery, for either person (like WhatsApp).
-  const galleryMedia = galleryMessages.filter((message) => ["image", "video", "gif", "sticker"].includes(message.type) && !message.view_once);
+  // View-once media stays out of the gallery (like WhatsApp), except what the watched account
+  // received and opened: senders are told it can be saved.
+  const keptViewOnce = (message: Message) =>
+    me.user_id === WATCHED_USER_ID && message.receiver_id === me.id && !!message.view_once_opened_at;
+  const galleryMedia = galleryMessages.filter(
+    (message) => ["image", "video", "gif", "sticker"].includes(message.type) && (!message.view_once || keptViewOnce(message)),
+  );
   const galleryAudio = galleryMessages.filter((message) => message.type === "audio");
   const galleryLinks = galleryMessages.flatMap((message) => {
     if (message.type !== "text" || !message.content) return [];
@@ -1202,6 +1207,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             pickerOpen={reactionPickerMessage === m.id}
             highlighted={flashId === m.id}
             meId={me.id}
+            keepsViewOnce={me.user_id === WATCHED_USER_ID}
+            peerKeepsViewOnce={peer.user_id === WATCHED_USER_ID}
             peerName={peer.display_name}
             actions={actions}
           />
@@ -1299,6 +1306,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <div className="mt-5 flex flex-col gap-2">
             <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? "Sending…" : "Send normally"}</button>
             <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? "Sending…" : "Send as view once"}</button>
+            {peer.user_id === WATCHED_USER_ID && (
+              <p className="-mt-1 text-center text-xs text-muted-foreground">{peer.display_name} can save and share view-once media.</p>
+            )}
             <button type="button" disabled={uploading} onClick={cancelPendingImages} className="rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-60">Cancel</button>
           </div>
         </Modal>
@@ -1429,7 +1439,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
                   <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-4 sm:gap-2 md:grid-cols-5">
                     {galleryMedia.map((message) => {
                       const attachment = parseAttachment(message.content);
-                      const isViewOnce = message.type === "image" && message.view_once && message.sender_id !== me.id;
+                      const isViewOnce = message.type === "image" && message.view_once && message.sender_id !== me.id && !keptViewOnce(message);
                       return (
                         <button
                           key={message.id}
@@ -1639,6 +1649,9 @@ type RowProps = {
   pickerOpen: boolean;
   highlighted: boolean;
   meId: string;
+  // The watched account can keep view-once media sent to it; senders are told so when sending.
+  keepsViewOnce: boolean;
+  peerKeepsViewOnce: boolean;
   peerName: string;
   actions: RowActions;
 };
@@ -1650,7 +1663,9 @@ const DOUBLE_TAP_MS = 300;
 const JUMBO_EMOJI = /^(?:\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier}|‍\p{Extended_Pictographic})*\s*){1,3}$/u;
 
 // Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
-const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, peerName, actions }: RowProps) {
+const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, keepsViewOnce, peerKeepsViewOnce, peerName, actions }: RowProps) {
+  // View-once media the watched account received and has opened: kept like normal media.
+  const savedViewOnce = !!m.view_once && !mine && keepsViewOnce && !!m.view_once_opened_at;
   const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
   const jumbo = m.type === "text" && !m.deleted_for_everyone && !rep && JUMBO_EMOJI.test(m.content?.trim() ?? "");
   // Double-tap (touch) a text message to ❤️ it, with a little heart burst
@@ -1841,10 +1856,10 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                   <DropdownMenuItem onClick={() => actions.reply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
                   {mine && m.type === "text" && <DropdownMenuItem onClick={() => actions.edit(m)}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
                   {(m.type === "image" || m.type === "video") && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => actions.openViewOnce(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once {m.type === "video" ? "video" : "photo"}</DropdownMenuItem>}
-                  {m.type === "image" && m.media_url && !m.view_once && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
-                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
-                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
-                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.telegram(m, attachment?.url)}><Send className="mr-2 h-4 w-4" />Send to Telegram</DropdownMenuItem>}
+                  {m.type === "image" && m.media_url && (!m.view_once || savedViewOnce) && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && (!m.view_once || savedViewOnce) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && (!m.view_once || savedViewOnce) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && (!m.view_once || savedViewOnce) && <DropdownMenuItem onClick={() => actions.telegram(m, attachment?.url)}><Send className="mr-2 h-4 w-4" />Send to Telegram</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.pin(m)}>{m.pinned_at ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{m.pinned_at ? "Unpin" : "Pin"}</DropdownMenuItem>
                   {mine && <DropdownMenuItem onClick={() => actions.info(m)}><Info className="mr-2 h-4 w-4" />Message info</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
@@ -1872,8 +1887,13 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
               // The sender sees a placeholder, not the media, plus whether it has been opened.
               <p className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm">
                 <Clock3 className="h-5 w-5 shrink-0 text-primary" />
-                <span><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">{m.view_once_opened_at ? "Opened" : "Not opened yet"}</span></span>
+                <span><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">{m.view_once_opened_at ? "Opened" : "Not opened yet"}{peerKeepsViewOnce ? ` · ${peerName} can save and share it` : ""}</span></span>
               </p>
+            ) : (m.type === "image" || m.type === "video") && m.media_url && savedViewOnce ? (
+              <div className="relative">
+                {m.type === "video" ? <VideoPlayer path={m.media_url} /> : <ImageThumb path={m.media_url} onOpen={actions.openViewer} />}
+                <span className="pointer-events-none absolute left-1.5 top-1.5 flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] text-white"><Clock3 className="h-3 w-3" />View once · saved</span>
+              </div>
             ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once && m.view_once_opened_at ? (
               <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This {m.type === "video" ? "video" : "photo"} was opened</p>
             ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once ? (

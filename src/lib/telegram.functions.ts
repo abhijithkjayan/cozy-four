@@ -263,11 +263,21 @@ export const shareToTelegram = createServerFn({ method: "POST" })
     const chatId = process.env["T_CHAT_ID"] || DEFAULT_CHAT_ID;
     const { data: msg, error } = await context.supabase
       .from("messages")
-      .select("id, type, media_url, content, view_once, deleted_for_everyone")
+      .select("id, type, media_url, content, view_once, view_once_opened_at, receiver_id, deleted_for_everyone")
       .eq("id", data.messageId)
       .maybeSingle();
     if (error || !msg || msg.deleted_for_everyone) throw new Error("Message not found.");
-    if (msg.view_once) throw new Error("View-once media can't be shared.");
+    if (msg.view_once) {
+      // Only the watched account may share view-once media it received and opened
+      // (senders are told so when they send it).
+      const { data: caller } = await context.supabase
+        .from("profiles")
+        .select("user_id")
+        .eq("id", context.userId)
+        .maybeSingle();
+      const kept = caller?.user_id === WATCHED_USER_ID && msg.receiver_id === context.userId && !!msg.view_once_opened_at;
+      if (!kept) throw new Error("View-once media can't be shared.");
+    }
     let fileUrl: string | undefined;
     if (msg.media_url) {
       const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(msg.media_url, 600);

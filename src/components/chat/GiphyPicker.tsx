@@ -160,25 +160,25 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center" onClick={onClose}>
       <div className="flex max-h-[min(80vh,620px)] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-card shadow-xl" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-3 border-b px-4 py-3">
+        <div className="flex shrink-0 items-center gap-3 border-b px-4 py-3">
           <div className="flex-1 font-semibold">GIFs & stickers</div>
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
-        <div className="flex gap-1 border-b px-4 pt-2">
+        <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
           {([["gif", "GIFs"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
           ))}
         </div>
-            <form onSubmit={(e) => { e.preventDefault(); setQuery(input.trim()); }} className="m-3 flex items-center gap-2 rounded-lg bg-muted px-3">
+            <form onSubmit={(e) => { e.preventDefault(); setQuery(input.trim()); }} className="m-3 flex shrink-0 items-center gap-2 rounded-lg bg-muted px-3">
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={input} onChange={(e) => setInput(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search GIFs" aria-label="Search GIFs" />
             </form>
-            <div className="-mt-1 flex gap-1.5 overflow-x-auto px-3 pb-2">
+            <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 pb-3 pt-0.5 [scrollbar-width:none]">
               {tags.map((t) => (
-                <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 rounded-full px-3 py-1 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
+                <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
               ))}
             </div>
-            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3">
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
               {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
