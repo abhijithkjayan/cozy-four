@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Play, Search, X } from "lucide-react";
-import { extraGifSearch, giphySearch, redgifsSearch } from "@/lib/giphy.functions";
+import { giphySearch, redgifsSearch } from "@/lib/giphy.functions";
 import { freshRedgifs, RedgifsHttpError, searchRedgifsDirect } from "@/lib/redgifs-client";
 
 type GiphyItem = {
@@ -15,20 +15,14 @@ type GiphyItem = {
   };
 };
 
-export type PickedGif = {
-  url: string;
-  preview: string;
-  title: string;
-  video?: boolean;
-  redgifsId?: string;
-};
+export type PickedGif = { url: string; preview: string; title: string; video?: boolean; redgifsId?: string };
 
 type GiphyPickerProps = {
   onSelect: (item: PickedGif, kind: "gif" | "sticker") => void;
   onClose: () => void;
 };
 
-type Tab = "gif" | "got" | "sticker";
+type Tab = "gif" | "got" | "others" | "sticker";
 // One grid item for every source: a still or animated preview, plus what gets sent.
 type Tile = { id: string; title: string; thumb: string; video: boolean; send: PickedGif };
 
@@ -81,6 +75,10 @@ const TAGS = [
   { label: "Funny", q: "funny" },
   { label: "Reactions", q: "reaction" },
 ];
+// Others tab: every theme tag (Kiss through Movie love scene), opening on the first one.
+const OTHERS_TAGS = TAGS.filter((t) => t.q);
+const OTHERS_DEFAULT = OTHERS_TAGS[0]?.q ?? "kiss";
+
 // Game of Thrones tab (GIPHY and KLIPY only). Empty query = the whole series.
 const GOT_ALL = "game of thrones";
 const GOT_TAGS = [
@@ -171,21 +169,19 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
 
   const [adultNote, setAdultNote] = useState<string | null>(null);
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
-    const q = tab === "got" ? query || GOT_ALL : query || DEFAULT_QUERY;
-    const [result, adult, extra] = await Promise.all([
+    const q = tab === "got" ? query || GOT_ALL : tab === "others" ? query || OTHERS_DEFAULT : query || DEFAULT_QUERY;
+    const withAdult = tab === "gif" || tab === "others";
+    const [result, adult] = await Promise.all([
       giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
-      tab === "gif" ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
-      tab === "gif"
-        ? extraGifSearch({ data: { query: q, page: pageNumber } })
-        : Promise.resolve({ items: [] as GiphyItem[], errors: [] as string[] }),
+      withAdult ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
     ]);
-    if (pageNumber === 0) setAdultNote([adult.error, ...extra.errors].filter(Boolean).join("; ") || null);
-    // Adult results first in each round so they aren't buried under ordinary GIFs.
+    // Explains an empty adult section instead of failing silently.
+    if (pageNumber === 0) setAdultNote(adult.error);
+    // Adult clips first in each round so they aren't buried under ordinary GIFs.
     const base = result.items as GiphyItem[];
-    const adultItems = [...adult.items, ...(extra.items as GiphyItem[])];
     const mixed: GiphyItem[] = [];
-    for (let a = 0, b = 0; a < adultItems.length || b < base.length; a++, b += 2) {
-      const clip = adultItems[a];
+    for (let a = 0, b = 0; a < adult.items.length || b < base.length; a++, b += 2) {
+      const clip = adult.items[a];
       if (clip) mixed.push(clip);
       mixed.push(...base.slice(b, b + 2));
     }
@@ -232,11 +228,12 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const switchTab = (value: Tab) => {
     setTab(value);
     setInput("");
-    setQuery("");
+    setQuery(value === "others" ? OTHERS_DEFAULT : "");
     setItems([]);
   };
 
-  const tags = tab === "gif" ? TAGS : tab === "got" ? GOT_TAGS : TAGS.slice(0, 13);
+  // GIFs is trending + search only; the theme tags live under Others.
+  const tags = tab === "gif" ? [] : tab === "got" ? GOT_TAGS : tab === "others" ? OTHERS_TAGS : TAGS.slice(0, 13);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center" onClick={onClose}>
@@ -246,7 +243,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["got", "Game of Thrones"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
+          {([["gif", "GIFs"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
           ))}
         </div>
@@ -254,17 +251,13 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={input} onChange={(e) => setInput(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder="Search GIFs" aria-label="Search GIFs" />
             </form>
-            <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 pb-3 pt-0.5 [scrollbar-width:none]">
+            {tags.length > 0 && <div className="flex shrink-0 gap-2 overflow-x-auto border-b px-3 pb-3 pt-0.5 [scrollbar-width:none]">
               {tags.map((t) => (
                 <button key={t.label} type="button" onClick={() => { setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
               ))}
-            </div>
+            </div>}
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-              {adultNote && !loading && (
-                <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
-                  Some adult GIF sources are unavailable ({adultNote}). Showing available results.
-                </p>
-              )}
+              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">Adult GIFs could not load right now (RedGifs {adultNote}). Showing other GIFs.</p>}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
               {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
@@ -283,9 +276,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
                 </button>
               )}
             </div>
-        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">
-          {tab === "gif" ? "Powered by KLIPY, GIPHY, RedGifs, Rule34 & Fluxpoint" : "Powered by KLIPY & GIPHY"}
-        </div>
+        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">{tab === "gif" || tab === "others" ? "Powered by KLIPY, GIPHY & RedGifs" : "Powered by KLIPY & GIPHY"}</div>
       </div>
     </div>
   );
