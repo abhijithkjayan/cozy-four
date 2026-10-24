@@ -128,7 +128,7 @@ export function ProfilePanel({
     const { error: updateError } = await supabase
       .from("profiles")
       .update(
-        isWatched
+        isWatched || !ALERT_SCHEDULE_ACTIVE
           ? { telegram_alerts_enabled: enabled }
           : { telegram_alerts_enabled: enabled, telegram_alerts_changed_at: changedAt },
       )
