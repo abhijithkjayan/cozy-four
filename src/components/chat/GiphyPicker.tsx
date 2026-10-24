@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Play, Search, X } from "lucide-react";
 import { giphySearch, redgifsSearch } from "@/lib/giphy.functions";
-import { freshRedgifs, RedgifsHttpError, searchRedgifsDirect } from "@/lib/redgifs-client";
+import { freshRedgifs } from "@/lib/redgifs-client";
 
 type GiphyItem = {
   id: string;
@@ -165,16 +165,12 @@ const toTile = (item: GiphyItem): Tile =>
 
 /** RedGifs results, from the device first and the server if the device can't reach RedGifs. */
 async function loadAdult(query: string, page: number): Promise<{ items: GiphyItem[]; error: string | null }> {
-  try {
-    return { items: await searchRedgifsDirect(query, page), error: null };
-  } catch (error) {
-    if (error instanceof RedgifsHttpError) return { items: [], error: error.message };
-    const fallback = await redgifsSearch({ data: { query, page } }).catch((e: unknown) => ({
-      items: [],
-      error: e instanceof Error ? e.message : "unreachable",
-    }));
-    return { items: fallback.items as GiphyItem[], error: fallback.error };
-  }
+  // Server only: RedGifs' CORS blocks its search for browsers on other sites.
+  const result = await redgifsSearch({ data: { query, page } }).catch((e: unknown) => ({
+    items: [],
+    error: e instanceof Error ? e.message : "unreachable",
+  }));
+  return { items: result.items as GiphyItem[], error: result.error };
 }
 
 /** Preview tile; a clip whose preview link was refused asks once for a fresh one. */
@@ -182,10 +178,11 @@ function TileImage({ tile }: { tile: Tile }) {
   const [src, setSrc] = useState(tile.thumb);
   const [retried, setRetried] = useState(false);
   const onError = () => {
-    if (retried || !tile.send.redgifsId) return;
+    // A tile that still can't load stays blank instead of showing a broken image.
+    if (retried || !tile.send.redgifsId) return setSrc("");
     setRetried(true);
     void freshRedgifs(tile.send.redgifsId).then((fresh) => {
-      if (!fresh) return;
+      if (!fresh) return setSrc("");
       setSrc(fresh.poster);
       tile.send.url = fresh.video;
       tile.send.preview = fresh.poster;
@@ -205,7 +202,6 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
-  const [adultNote, setAdultNote] = useState<string | null>(null);
   const [adultAccessConfirmed, setAdultAccessConfirmed] = useState(false);
   const [showAdultNotice, setShowAdultNotice] = useState(false);
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
@@ -217,7 +213,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
         : giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
       withAdult ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
     ]);
-    if (pageNumber === 0) setAdultNote(adult.error);
+    if (pageNumber === 0 && adult.error) console.warn("RedGifs:", adult.error);
     return ((withAdult ? adult.items : result.items) as GiphyItem[]).map(toTile);
   };
 
@@ -290,7 +286,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["adult", "Adult 18+"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
+          {([["gif", "GIFs"], ["adult", "Naughty"], ["got", "GOT"], ["others", "Others"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
           ))}
         </div>
@@ -304,15 +300,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               ))}
             </div>}
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">RedGifs is unavailable ({adultNote}).</p>}
-              {tab === "adult" && (
-                <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
-                  External 18+ results are linked from RedGifs, not copied into app storage.
-                </p>
-              )}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
-              {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
-              {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
               {!loading && !error && <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {items.map((item) => (
                   <button key={item.id} onClick={() => onSelect(item.send, tab === "sticker" ? "sticker" : "gif")} className="relative aspect-square overflow-hidden rounded-lg bg-muted focus:outline-none focus:ring-2 focus:ring-ring" aria-label={`Send ${item.title || "GIF"}`}>

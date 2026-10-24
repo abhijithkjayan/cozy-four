@@ -2001,7 +2001,7 @@ function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: stri
       .catch(() => setFailed(true));
   };
   if (failed && redgifsId) return <RedgifsEmbed id={redgifsId.toLowerCase()} />;
-  if (failed) return <p className="px-1 text-sm italic text-muted-foreground">Clip unavailable</p>;
+  if (failed) return null; // No error text for GIFs: a clip that can't load just isn't shown.
   return (
     <video
       src={src}

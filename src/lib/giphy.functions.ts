@@ -85,7 +85,41 @@ async function fromGiphy(query: string, kind: "gif" | "sticker", page: number): 
 // IP address and browser they were requested for, so every call passes the viewer's IP and
 // user agent (user-addr / user-agent); links fetched for the server itself would fail with 403.
 const REDGIFS_API = "https://api.redgifs.com/v2";
-let redgifsToken: { value: string; agent: string; at: number } | null = null;
+let redgifsToken: { value: string; agent: string; expiresAt: number } | null = null;
+
+// RedGifs' search can't be called from a browser on another site (its CORS only allows
+// www.redgifs.com), so it runs here. Anonymous "temporary" tokens are rate limited per IP, and this
+// server shares Cloudflare's IPs with many other sites, so it gets HTTP 429 a lot. With RedGifs API
+// keys (REDGIFS_CLIENT_ID / REDGIFS_CLIENT_SECRET, from RedGifs' developer access) the server
+// signs in as its own client instead.
+async function redgifsLogin(headers: Record<string, string>, agent: string) {
+  const clientId = process.env["REDGIFS_CLIENT_ID"];
+  const clientSecret = process.env["REDGIFS_CLIENT_SECRET"];
+  if (clientId && clientSecret) {
+    const res = await fetch(`${REDGIFS_API}/oauth/client`, {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret }),
+    });
+    if (!res.ok) throw new Error(`RedGifs client sign-in failed [${res.status}]: ${(await res.text()).slice(0, 160)}`);
+    const body = (await res.json()) as { access_token?: string; token?: string; expires_in?: number };
+    const value = body.access_token || body.token;
+    if (!value) throw new Error("RedGifs client sign-in returned no token");
+    // Refresh 10 minutes before it runs out, as RedGifs recommends.
+    const lifeMs = (Number(body.expires_in) || 3600) * 1000;
+    return { value, agent, expiresAt: Date.now() + Math.max(60_000, lifeMs - 10 * 60 * 1000) };
+  }
+  const res = await fetch(`${REDGIFS_API}/auth/temporary`, { headers });
+  if (!res.ok) throw new Error(`RedGifs auth failed [${res.status}]: ${await res.text()}`);
+  const body = (await res.json()) as { token?: string };
+  if (!body.token) throw new Error("RedGifs auth returned no token");
+  return { value: body.token, agent, expiresAt: Date.now() + 12 * 60 * 60 * 1000 };
+}
+
+// Search results are reused for 20 minutes per viewer (links are tied to the viewer's IP),
+// so browsing back and forth or reopening the picker doesn't spend more requests.
+const REDGIFS_CACHE_MS = 20 * 60 * 1000;
+const redgifsCache = new Map<string, { at: number; items: Out[] }>();
 // After a 429 the server waits out RedGifs' requested delay instead of retrying straight away.
 let redgifsBlockedUntil = 0;
 type Viewer = { ip: string; agent: string };
@@ -108,12 +142,8 @@ async function redgifsFetch(path: string, who: Viewer, retry = true): Promise<Re
   const waitSecs = Math.ceil((redgifsBlockedUntil - Date.now()) / 1000);
   if (waitSecs > 0) throw new Error(`rate limited, try again in ${waitSecs}s`);
   const headers = { "User-Agent": who.agent, Referer: "https://www.redgifs.com/", Origin: "https://www.redgifs.com" };
-  if (!redgifsToken || redgifsToken.agent !== who.agent || Date.now() - redgifsToken.at > 12 * 60 * 60 * 1000) {
-    const res = await fetch(`${REDGIFS_API}/auth/temporary`, { headers });
-    if (!res.ok) throw new Error(`RedGifs auth failed [${res.status}]: ${await res.text()}`);
-    const body = (await res.json()) as { token?: string };
-    if (!body.token) throw new Error("RedGifs auth returned no token");
-    redgifsToken = { value: body.token, agent: who.agent, at: Date.now() };
+  if (!redgifsToken || redgifsToken.agent !== who.agent || Date.now() > redgifsToken.expiresAt) {
+    redgifsToken = await redgifsLogin(headers, who.agent);
   }
   const sep = path.includes("?") ? "&" : "?";
   const forViewer = new URLSearchParams({ "user-agent": who.agent, ...(who.ip ? { "user-addr": who.ip } : {}) });
@@ -151,13 +181,20 @@ async function fromRedgifs(query: string, page: number): Promise<Out[]> {
     count: String(PER_PAGE),
     page: String(page + 1),
   });
-  const res = await redgifsFetch(`/gifs/search?${params}`, viewer());
+  const who = viewer();
+  const key = `${who.ip}|${query}|${page}`;
+  const cached = redgifsCache.get(key);
+  if (cached && Date.now() - cached.at < REDGIFS_CACHE_MS) return cached.items;
+  const res = await redgifsFetch(`/gifs/search?${params}`, who);
   if (!res.ok) {
     const detail = (await res.text()).replace(/\s+/g, " ").slice(0, 160);
     throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
   }
   const body = (await res.json()) as { gifs?: RedgifsGif[] };
-  return (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
+  const items = (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
+  if (redgifsCache.size > 200) redgifsCache.clear();
+  redgifsCache.set(key, { at: Date.now(), items });
+  return items;
 }
 
 /** Server fallback when the browser can't reach RedGifs itself (see redgifs-client.ts). */
