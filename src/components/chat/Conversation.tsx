@@ -11,7 +11,6 @@ import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker, type PickedGif } from "./GiphyPicker";
 import { MediaEditor } from "./MediaEditor";
-import { freshRedgifs } from "@/lib/redgifs-client";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -60,31 +59,6 @@ function extractMessageLinks(content: string) {
     links.push({ start, end: start + url.length, url, href });
   }
   return links;
-}
-
-// RedGifs links (redgifs.com/watch/ID, /ifr/ID or v3.redgifs.com/watch/ID) play inline in the chat.
-const REDGIFS_LINK = /(?:^|\/\/)(?:www\.|v3\.)?redgifs\.com\/(?:watch|ifr)\/([a-z0-9]+)/i;
-function redgifsIdIn(content: string | null) {
-  if (!content) return null;
-  for (const { href } of extractMessageLinks(content)) {
-    const id = REDGIFS_LINK.exec(href)?.[1];
-    if (id) return id.toLowerCase();
-  }
-  return null;
-}
-
-/** RedGifs' own embedded player: it loads straight from RedGifs on the viewer's device. */
-function RedgifsEmbed({ id }: { id: string }) {
-  return (
-    <iframe
-      src={`https://www.redgifs.com/ifr/${id}`}
-      title="RedGifs clip"
-      loading="lazy"
-      allow="autoplay; fullscreen; encrypted-media"
-      allowFullScreen
-      className="mt-1 block aspect-[9/16] max-h-80 w-56 rounded-lg border-0 bg-muted"
-    />
-  );
 }
 
 function renderLinkedText(content: string): ReactNode[] {
@@ -1482,8 +1456,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
                             </span>
                           ) : (message.type === "image" || message.type === "video") && message.media_url ? (
                             <GalleryThumb path={message.media_url} video={message.type === "video"} />
-                          ) : attachment?.video && attachment.preview ? (
-                            <img src={attachment.preview} alt={attachment.title || "Clip"} className="h-full w-full object-cover" />
+                          ) : attachment?.video ? (
+                            null
                           ) : attachment?.url ? (
                             <img src={attachment.url} alt={attachment.title || message.type} className="h-full w-full object-cover" />
                           ) : null}
@@ -1929,8 +1903,8 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 <MapPin className="h-5 w-5 shrink-0 text-primary" />
                 <span><strong className="block">Current location</strong><span className="text-xs text-muted-foreground">Open in Google Maps</span></span>
               </a>
-            ) : m.type === "gif" && attachment?.video && attachment.url ? (
-              <ClipGif url={attachment.url} poster={attachment.preview} redgifsId={attachment.redgifsId} title={attachment.title} />
+            ) : m.type === "gif" && attachment?.video ? (
+              null
             ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
               <button onClick={() => actions.openViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
                 <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
@@ -1938,10 +1912,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
             ) : jumbo ? (
               <p className="px-1 text-5xl leading-tight">{m.content?.trim()}</p>
             ) : (
-              <>
-                <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
-                {m.type === "text" && redgifsIdIn(m.content) && <RedgifsEmbed id={redgifsIdIn(m.content)!} />}
-              </>
+              <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
             )}
             <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
               <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
@@ -1986,30 +1957,6 @@ type Attachment = { url?: string; title?: string; mapsUrl?: string; preview?: st
 function parseAttachment(content: string | null): Attachment | null {
   if (!content) return null;
   try { return JSON.parse(content) as Attachment; } catch { return null; }
-}
-
-/**
- * RedGifs clips play in RedGifs' own embedded player, which loads straight on the viewer's device:
- * no server call, no expiring links, no rate limit. Other video GIFs play as a looping muted video.
- */
-function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: string | undefined; redgifsId?: string | undefined; title?: string | undefined }) {
-  const [failed, setFailed] = useState(false);
-  if (redgifsId) return <RedgifsEmbed id={redgifsId.toLowerCase()} />;
-  if (failed) return null; // No error text for GIFs: a clip that can't load just isn't shown.
-  return (
-    <video
-      src={url}
-      poster={poster}
-      autoPlay
-      loop
-      muted
-      playsInline
-      preload="metadata"
-      onError={() => setFailed(true)}
-      aria-label={title || "GIF"}
-      className="block max-h-72 max-w-64 rounded-lg bg-muted object-cover"
-    />
-  );
 }
 
 function Tick({ on }: { on: boolean }) {

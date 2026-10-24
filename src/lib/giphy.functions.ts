@@ -1,10 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
-import { getRequest } from "@tanstack/react-start/server";
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 
 // GIFs/stickers are combined from KLIPY (connector gateway) and Giphy, interleaved and de-duplicated.
-// Empty query = trending. Both use their most permissive setting (Giphy rating "r", KLIPY content
-// filter off) so romantic and adult (18+) results are included. `page` starts at 0 for "Load more".
+// Empty query = trending. Giphy uses rating "r" so romance/kiss results are included.
+// `page` starts at 0 for "Load more".
 const GATEWAY_URL = "https://connector-gateway.lovable.dev/klipy";
 const PER_PAGE = 50;
 
@@ -12,9 +10,6 @@ type Out = {
   id: string;
   title: string;
   images: { fixed_width: { url: string }; fixed_width_small: { url: string }; original: { url: string } };
-  // RedGifs clips are MP4 videos: `video` is what plays, images hold the poster.
-  video?: string;
-  redgifsId?: string;
 };
 type Variant = { url?: string };
 type KlipyItem = { id: number | string; title?: string; file?: Record<string, Record<string, Variant>> };
@@ -81,228 +76,24 @@ async function fromGiphy(query: string, kind: "gif" | "sticker", page: number): 
   })).filter((i) => i.images.original.url);
 }
 
-// --- RedGifs (explicit clips, mixed into the GIF results). Its media links only work for the
-// IP address and browser they were requested for, so every call passes the viewer's IP and
-// user agent (user-addr / user-agent); links fetched for the server itself would fail with 403.
-const REDGIFS_API = "https://api.redgifs.com/v2";
-type RedgifsToken = { value: string; expiresAt: number };
-const redgifsTokens = new Map<string, RedgifsToken>();
-const redgifsLogins = new Map<string, Promise<RedgifsToken>>();
-
-// RedGifs' search can't be called from a browser on another site (its CORS only allows
-// www.redgifs.com), so temporary-token login and refresh happen here.
-async function redgifsLogin(headers: Record<string, string>): Promise<RedgifsToken> {
-  const res = await fetch(`${REDGIFS_API}/auth/temporary`, { headers });
-  if (res.status === 429) await recordRedgifsRateLimit(res);
-  if (!res.ok) throw new Error(`RedGifs auth failed [${res.status}]: ${await res.text()}`);
-  const body = (await res.json()) as { token?: string; expires_in?: number };
-  if (!body.token) throw new Error("RedGifs auth returned no token");
-  let tokenExpiry: number | undefined;
-  try {
-    const payload = body.token.split(".")[1];
-    if (payload) {
-      const decoded = JSON.parse(atob(payload.replace(/-/g, "+").replace(/_/g, "/"))) as {
-        exp?: number;
-      };
-      if (typeof decoded.exp === "number") tokenExpiry = decoded.exp * 1000;
-    }
-  } catch {
-    tokenExpiry = undefined;
-  }
-  const expiresIn = Number(body.expires_in);
-  const expiresAt =
-    tokenExpiry ??
-    (Number.isFinite(expiresIn) && expiresIn > 0
-      ? Date.now() + expiresIn * 1000
-      : Date.now() + 60 * 60 * 1000);
-  return { value: body.token, expiresAt: expiresAt - 60_000 };
-}
-
-// Search results are reused for 2 hours per viewer (links are tied to the viewer's IP), so
-// browsing back and forth or reopening the picker doesn't spend more requests. When RedGifs is
-// rate limiting, the last results for that search are served instead, however old.
-const REDGIFS_CACHE_MS = 2 * 60 * 60 * 1000;
-const redgifsCache = new Map<string, { at: number; items: Out[] }>();
-// After a 429 the server waits out RedGifs' requested delay instead of retrying straight away.
-let redgifsBlockedUntil = 0;
-type Viewer = { ip: string; agent: string };
-
-async function recordRedgifsRateLimit(res: Response) {
-  const body = (await res.clone().json().catch(() => null)) as { error?: { delay?: number } } | null;
-  const delay = Math.min(Math.max(Number(body?.error?.delay) || 60, 10), 600);
-  redgifsBlockedUntil = Date.now() + delay * 1000;
-}
-
-function viewer(): Viewer {
-  try {
-    const headers = getRequest().headers;
-    const ip =
-      headers.get("cf-connecting-ip") ||
-      headers.get("x-real-ip") ||
-      headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-      "";
-    return { ip, agent: headers.get("user-agent") || "Mozilla/5.0" };
-  } catch {
-    return { ip: "", agent: "Mozilla/5.0" };
-  }
-}
-
-async function getRedgifsToken(headers: Record<string, string>, agent: string): Promise<RedgifsToken> {
-  const cached = redgifsTokens.get(agent);
-  if (cached && Date.now() < cached.expiresAt) return cached;
-
-  const pending = redgifsLogins.get(agent);
-  if (pending) return pending;
-
-  const login = redgifsLogin(headers);
-  redgifsLogins.set(agent, login);
-  try {
-    const token = await login;
-    redgifsTokens.set(agent, token);
-    if (redgifsTokens.size > 100) {
-      const oldestAgent = redgifsTokens.keys().next().value;
-      if (oldestAgent) redgifsTokens.delete(oldestAgent);
-    }
-    return token;
-  } finally {
-    if (redgifsLogins.get(agent) === login) redgifsLogins.delete(agent);
-  }
-}
-
-async function redgifsFetch(path: string, who: Viewer, retry = true): Promise<Response> {
-  const waitSecs = Math.ceil((redgifsBlockedUntil - Date.now()) / 1000);
-  if (waitSecs > 0) throw new Error(`rate limited, try again in ${waitSecs}s`);
-  const headers = { "User-Agent": who.agent, Referer: "https://www.redgifs.com/", Origin: "https://www.redgifs.com" };
-  const token = await getRedgifsToken(headers, who.agent);
-  const sep = path.includes("?") ? "&" : "?";
-  const forViewer = new URLSearchParams({ "user-agent": who.agent, ...(who.ip ? { "user-addr": who.ip } : {}) });
-  const res = await fetch(`${REDGIFS_API}${path}${sep}${forViewer}`, {
-    headers: { ...headers, Authorization: `Bearer ${token.value}` },
-  });
-  if ((res.status === 401 || res.status === 403) && retry) {
-    if (redgifsTokens.get(who.agent)?.value === token.value) redgifsTokens.delete(who.agent);
-    return redgifsFetch(path, who, false);
-  }
-  if (res.status === 429) {
-    await recordRedgifsRateLimit(res);
-  }
-  return res;
-}
-
-type RedgifsGif = { id: string; tags?: string[]; urls?: { sd?: string; hd?: string; poster?: string; thumbnail?: string } };
-
-const fromRedgifsGif = (g: RedgifsGif): Out => {
-  const poster = g.urls?.thumbnail || g.urls?.poster || "";
-  return {
-    id: `r-${g.id}`,
-    title: (g.tags ?? []).slice(0, 3).join(", "),
-    images: { fixed_width: { url: poster }, fixed_width_small: { url: poster }, original: { url: g.urls?.sd || g.urls?.hd || "" } },
-    video: g.urls?.sd || g.urls?.hd || "",
-    redgifsId: g.id,
-  };
-};
-
-async function fromRedgifs(query: string, page: number): Promise<Out[]> {
-  const params = new URLSearchParams({
-    search_text: query || "couple",
-    order: query ? "top" : "trending",
-    count: String(PER_PAGE),
-    page: String(page + 1),
-  });
-  const who = viewer();
-  const key = `${who.ip}|${query}|${page}`;
-  const cached = redgifsCache.get(key);
-  if (cached && Date.now() - cached.at < REDGIFS_CACHE_MS) return cached.items;
-  // Last results for this search from anyone, for when RedGifs refuses to answer.
-  const stale = () => {
-    if (cached?.items.length) return cached.items;
-    for (const [k, v] of redgifsCache) if (k.endsWith(`|${query}|${page}`) && v.items.length) return v.items;
-    return null;
-  };
-  let res: Response;
-  try {
-    res = await redgifsFetch(`/gifs/search?${params}`, who);
-  } catch (error) {
-    const old = stale();
-    if (old) return old;
-    throw error;
-  }
-  if (!res.ok) {
-    const old = stale();
-    if (old) return old;
-    const detail = (await res.text()).replace(/\s+/g, " ").slice(0, 160);
-    throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
-  }
-  const body = (await res.json()) as { gifs?: RedgifsGif[] };
-  const items = (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
-  if (redgifsCache.size > 300) redgifsCache.delete(redgifsCache.keys().next().value!);
-  redgifsCache.set(key, { at: Date.now(), items });
-  return items;
-}
-
-/** Server fallback when the browser can't reach RedGifs itself (see redgifs-client.ts). */
-export const redgifsSearch = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .validator((input: { query: string; page?: number }) => ({
-    query: String(input.query || "").trim().slice(0, 100),
-    page: Math.min(Math.max(0, Math.floor(Number(input.page) || 0)), 40),
-  }))
-  .handler(async ({ data }): Promise<{ items: Out[]; error: string | null }> => {
-    try {
-      return { items: await fromRedgifs(data.query, data.page), error: null };
-    } catch (error) {
-      console.error("RedGifs search failed:", error);
-      return { items: [], error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-/** Fresh playable link (for this viewer) for a RedGifs clip, e.g. when a saved one has expired. */
-export const redgifsUrl = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .validator((input: { id: string }) => ({ id: String(input.id || "").replace(/[^a-z0-9]/gi, "").slice(0, 80) }))
-  .handler(async ({ data }) => {
-    if (!data.id) return null;
-    try {
-      const res = await redgifsFetch(`/gifs/${data.id.toLowerCase()}`, viewer());
-      if (!res.ok) { console.error(`RedGifs gif failed [${res.status}]`); return null; }
-      const body = (await res.json()) as { gif?: RedgifsGif };
-      if (!body.gif) return null;
-      const item = fromRedgifsGif(body.gif);
-      return { video: item.video ?? "", poster: item.images.fixed_width.url };
-    } catch (error) {
-      console.error("RedGifs gif failed:", error);
-      return null;
-    }
-  });
 
 export const giphySearch = createServerFn({ method: "GET" })
-  // adult: false leaves RedGifs out (e.g. the Game of Thrones tab, which is GIPHY/KLIPY only).
-  .validator((input: { query: string; kind: "gif" | "sticker"; page?: number; adult?: boolean }) => ({
+  .validator((input: { query: string; kind: "gif" | "sticker"; page?: number }) => ({
     query: String(input.query || "").trim().slice(0, 100),
     kind: input.kind === "sticker" ? ("sticker" as const) : ("gif" as const),
     page: Math.min(Math.max(0, Math.floor(Number(input.page) || 0)), 40),
-    adult: input.adult !== false,
   }))
-  .handler(async ({ data }): Promise<{ items: Out[]; redgifsError: string | null }> => {
-    let redgifsError: string | null = null;
-    const [a, b, c] = await Promise.all([
+  .handler(async ({ data }): Promise<{ items: Out[] }> => {
+    const [a, b] = await Promise.all([
       fromKlipy(data.query, data.kind, data.page).catch(() => []),
       fromGiphy(data.query, data.kind, data.page).catch(() => []),
-      data.kind === "gif" && data.adult
-        ? fromRedgifs(data.query, data.page).catch((error: unknown) => {
-            console.error("RedGifs search failed:", error);
-            redgifsError = error instanceof Error ? error.message : String(error);
-            return [] as Out[];
-          })
-        : Promise.resolve([] as Out[]),
     ]);
     const out: Out[] = [];
     const seen = new Set<string>();
-    // Adult clips first in each round so they aren't buried under ordinary GIFs.
-    for (let i = 0; i < Math.max(a.length, b.length, c.length); i++) {
-      for (const item of [c[i], a[i], b[i]]) {
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      for (const item of [a[i], b[i]]) {
         if (item && !seen.has(item.images.original.url)) { seen.add(item.images.original.url); out.push(item); }
       }
     }
-    return { items: out, redgifsError };
+    return { items: out };
   });

@@ -5,6 +5,9 @@ export const ALERT_TIME_ZONE = "America/Toronto";
 export const NIGHT_START_HOUR = 23;
 export const NIGHT_END_HOUR = 7;
 export const NIGHT_MANUAL_ON_MS = 15 * 60 * 1000;
+// On hold: while false, the night schedule is paused and alerts follow the on/off switch only.
+// Set back to true to resume the 11 PM - 7 AM schedule.
+export const ALERT_SCHEDULE_ACTIVE = false;
 
 const formatter = new Intl.DateTimeFormat("en-CA", {
   timeZone: ALERT_TIME_ZONE,
@@ -37,6 +40,7 @@ export function isAlertNight(now = new Date()) {
  * A change only holds for the day or night it was made in; at 7 AM alerts are on again and at 11 PM off.
  */
 export function effectiveAlertsEnabled(enabled: boolean, changedAt: string | null | undefined, now = new Date()) {
+  if (!ALERT_SCHEDULE_ACTIVE) return enabled;
   const period = alertPeriod(now);
   const changedMs = changedAt ? Date.parse(changedAt) : Number.NaN;
   const known = Number.isFinite(changedMs);
@@ -48,6 +52,7 @@ export function effectiveAlertsEnabled(enabled: boolean, changedAt: string | nul
 
 /** When a manual night-time switch-on runs out, or null if it isn't running. */
 export function nightManualOnEndsAt(enabled: boolean, changedAt: string | null | undefined, now = new Date()) {
+  if (!ALERT_SCHEDULE_ACTIVE) return null;
   if (!isAlertNight(now) || !effectiveAlertsEnabled(enabled, changedAt, now) || !changedAt) return null;
   return new Date(new Date(changedAt).getTime() + NIGHT_MANUAL_ON_MS);
 }
