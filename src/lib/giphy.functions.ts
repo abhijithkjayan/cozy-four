@@ -86,6 +86,8 @@ async function fromGiphy(query: string, kind: "gif" | "sticker", page: number): 
 // user agent (user-addr / user-agent); links fetched for the server itself would fail with 403.
 const REDGIFS_API = "https://api.redgifs.com/v2";
 let redgifsToken: { value: string; agent: string; at: number } | null = null;
+// After a 429 the server waits out RedGifs' requested delay instead of retrying straight away.
+let redgifsBlockedUntil = 0;
 type Viewer = { ip: string; agent: string };
 
 function viewer(): Viewer {
@@ -103,6 +105,8 @@ function viewer(): Viewer {
 }
 
 async function redgifsFetch(path: string, who: Viewer, retry = true): Promise<Response> {
+  const waitSecs = Math.ceil((redgifsBlockedUntil - Date.now()) / 1000);
+  if (waitSecs > 0) throw new Error(`rate limited, try again in ${waitSecs}s`);
   const headers = { "User-Agent": who.agent, Referer: "https://www.redgifs.com/", Origin: "https://www.redgifs.com" };
   if (!redgifsToken || redgifsToken.agent !== who.agent || Date.now() - redgifsToken.at > 12 * 60 * 60 * 1000) {
     const res = await fetch(`${REDGIFS_API}/auth/temporary`, { headers });
@@ -119,6 +123,10 @@ async function redgifsFetch(path: string, who: Viewer, retry = true): Promise<Re
   if ((res.status === 401 || res.status === 403) && retry) {
     redgifsToken = null;
     return redgifsFetch(path, who, false);
+  }
+  if (res.status === 429) {
+    const body = (await res.clone().json().catch(() => null)) as { error?: { delay?: number } } | null;
+    redgifsBlockedUntil = Date.now() + Math.min(Math.max(Number(body?.error?.delay) || 60, 10), 600) * 1000;
   }
   return res;
 }
@@ -151,6 +159,22 @@ async function fromRedgifs(query: string, page: number): Promise<Out[]> {
   const body = (await res.json()) as { gifs?: RedgifsGif[] };
   return (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
 }
+
+/** Server fallback when the browser can't reach RedGifs itself (see redgifs-client.ts). */
+export const redgifsSearch = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { query: string; page?: number }) => ({
+    query: String(input.query || "").trim().slice(0, 100),
+    page: Math.min(Math.max(0, Math.floor(Number(input.page) || 0)), 40),
+  }))
+  .handler(async ({ data }): Promise<{ items: Out[]; error: string | null }> => {
+    try {
+      return { items: await fromRedgifs(data.query, data.page), error: null };
+    } catch (error) {
+      console.error("RedGifs search failed:", error);
+      return { items: [], error: error instanceof Error ? error.message : String(error) };
+    }
+  });
 
 /** Fresh playable link (for this viewer) for a RedGifs clip, e.g. when a saved one has expired. */
 export const redgifsUrl = createServerFn({ method: "GET" })
@@ -203,3 +227,136 @@ export const giphySearch = createServerFn({ method: "GET" })
     return { items: out, redgifsError };
   });
 
+type Rule34Post = {
+  id?: number | string;
+  tags?: string;
+  file_url?: string;
+  preview_url?: string;
+  sample_url?: string;
+};
+
+const FLUXPOINT_CATEGORIES = [
+  "anal",
+  "ass",
+  "bdsm",
+  "blowjob",
+  "boobjob",
+  "boobs",
+  "cum",
+  "feet",
+  "futa",
+  "handjob",
+  "hentai",
+  "kuni",
+  "neko",
+  "pussy",
+] as const;
+
+function fluxpointCategory(query: string): (typeof FLUXPOINT_CATEGORIES)[number] {
+  const words: string[] = query.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  if (words.includes("cumshot")) return "cum";
+  return FLUXPOINT_CATEGORIES.find((category) => words.includes(category)) ?? "hentai";
+}
+
+function allowedMediaUrl(value: unknown, host: "rule34" | "fluxpoint"): string {
+  if (typeof value !== "string") return "";
+  try {
+    const url = new URL(value);
+    const validHost =
+      host === "rule34"
+        ? url.hostname === "rule34.xxx" || url.hostname.endsWith(".rule34.xxx")
+        : url.hostname === "img.fluxpoint.dev";
+    return url.protocol === "https:" && validHost ? url.href : "";
+  } catch {
+    return "";
+  }
+}
+
+async function fromRule34(query: string, page: number): Promise<Out[]> {
+  const userId = process.env["RULE34_USER_ID"];
+  const apiKey = process.env["RULE34_API_KEY"];
+  if (!userId || !apiKey) throw new Error("not configured (set RULE34_USER_ID and RULE34_API_KEY)");
+
+  const terms = query.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
+  const params = new URLSearchParams({
+    page: "dapi",
+    s: "post",
+    q: "index",
+    json: "1",
+    limit: "25",
+    pid: String(page),
+    user_id: userId,
+    api_key: apiKey,
+    tags: ["animated", "rating:explicit", ...terms].join(" "),
+  });
+  const res = await fetch(`https://api.rule34.xxx/index.php?${params}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const posts = (await res.json()) as Rule34Post[];
+  if (!Array.isArray(posts)) throw new Error("unexpected response");
+
+  return posts.flatMap((post) => {
+    const media = allowedMediaUrl(post.file_url, "rule34");
+    const preview = allowedMediaUrl(post.preview_url || post.sample_url || post.file_url, "rule34");
+    if (!media || !preview || !/\.(gif|mp4|webm)$/i.test(new URL(media).pathname)) return [];
+    const video = /\.(mp4|webm)$/i.test(new URL(media).pathname);
+    return [{
+      id: `b-${post.id ?? media}`,
+      title: (post.tags ?? "").split(/\s+/).slice(0, 4).join(", "),
+      images: {
+        fixed_width: { url: preview },
+        fixed_width_small: { url: preview },
+        original: { url: media },
+      },
+      ...(video ? { video: media } : {}),
+    }];
+  });
+}
+
+async function fromFluxpoint(query: string): Promise<Out[]> {
+  const apiToken = process.env["FLUXPOINT_API_TOKEN"];
+  if (!apiToken) throw new Error("not configured (set FLUXPOINT_API_TOKEN)");
+
+  const category = fluxpointCategory(query);
+  const res = await fetch(`https://api.fluxpoint.dev/nsfw/gif/${category}`, {
+    headers: { Authorization: apiToken },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const body = (await res.json()) as { success?: boolean; id?: string | number; file?: string };
+  const media = allowedMediaUrl(body.file, "fluxpoint");
+  if (!body.success || !media) throw new Error("unexpected response");
+  return [{
+    id: `f-${body.id ?? media}`,
+    title: `Fluxpoint ${category}`,
+    images: {
+      fixed_width: { url: media },
+      fixed_width_small: { url: media },
+      original: { url: media },
+    },
+  }];
+}
+
+/** Additional adult sources. API credentials stay on the server and are never sent to the client. */
+export const extraGifSearch = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .validator((input: { query: string; page?: number }) => ({
+    query: String(input.query || "").trim().slice(0, 100),
+    page: Math.min(Math.max(0, Math.floor(Number(input.page) || 0)), 40),
+  }))
+  .handler(async ({ data }): Promise<{ items: Out[]; errors: string[] }> => {
+    const errors: string[] = [];
+    const results = await Promise.all([
+      fromRule34(data.query, data.page).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Rule34 search failed:", error);
+        errors.push(`Rule34 ${message}`);
+        return [] as Out[];
+      }),
+      fromFluxpoint(data.query).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Fluxpoint search failed:", error);
+        errors.push(`Fluxpoint ${message}`);
+        return [] as Out[];
+      }),
+    ]);
+    return { items: results.flat(), errors };
+  });

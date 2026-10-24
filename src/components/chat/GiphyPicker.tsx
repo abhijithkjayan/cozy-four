@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Play, Search, X } from "lucide-react";
-import { giphySearch, redgifsUrl } from "@/lib/giphy.functions";
+import { extraGifSearch, giphySearch, redgifsSearch } from "@/lib/giphy.functions";
+import { freshRedgifs, RedgifsHttpError, searchRedgifsDirect } from "@/lib/redgifs-client";
 
 type GiphyItem = {
   id: string;
@@ -14,7 +15,13 @@ type GiphyItem = {
   };
 };
 
-export type PickedGif = { url: string; preview: string; title: string; video?: boolean; redgifsId?: string };
+export type PickedGif = {
+  url: string;
+  preview: string;
+  title: string;
+  video?: boolean;
+  redgifsId?: string;
+};
 
 type GiphyPickerProps = {
   onSelect: (item: PickedGif, kind: "gif" | "sticker") => void;
@@ -120,6 +127,20 @@ const toTile = (item: GiphyItem): Tile =>
         send: { url: item.images.original.url, preview: item.images.fixed_width_small.url, title: item.title },
       };
 
+/** RedGifs results, from the device first and the server if the device can't reach RedGifs. */
+async function loadAdult(query: string, page: number): Promise<{ items: GiphyItem[]; error: string | null }> {
+  try {
+    return { items: await searchRedgifsDirect(query, page), error: null };
+  } catch (error) {
+    if (error instanceof RedgifsHttpError) return { items: [], error: error.message };
+    const fallback = await redgifsSearch({ data: { query, page } }).catch((e: unknown) => ({
+      items: [],
+      error: e instanceof Error ? e.message : "unreachable",
+    }));
+    return { items: fallback.items as GiphyItem[], error: fallback.error };
+  }
+}
+
 /** Preview tile; a clip whose preview link was refused asks once for a fresh one. */
 function TileImage({ tile }: { tile: Tile }) {
   const [src, setSrc] = useState(tile.thumb);
@@ -127,7 +148,7 @@ function TileImage({ tile }: { tile: Tile }) {
   const onError = () => {
     if (retried || !tile.send.redgifsId) return;
     setRetried(true);
-    void redgifsUrl({ data: { id: tile.send.redgifsId } }).then((fresh) => {
+    void freshRedgifs(tile.send.redgifsId).then((fresh) => {
       if (!fresh) return;
       setSrc(fresh.poster);
       tile.send.url = fresh.video;
@@ -151,12 +172,24 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [adultNote, setAdultNote] = useState<string | null>(null);
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
     const q = tab === "got" ? query || GOT_ALL : query || DEFAULT_QUERY;
-    const result = await giphySearch({
-      data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: tab === "gif" },
-    });
-    // Explains an empty adult section instead of failing silently.
-    if (pageNumber === 0) setAdultNote(tab === "gif" ? result.redgifsError : null);
-    return (result.items as GiphyItem[]).map(toTile);
+    const [result, adult, extra] = await Promise.all([
+      giphySearch({ data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: false } }),
+      tab === "gif" ? loadAdult(q, pageNumber) : Promise.resolve({ items: [] as GiphyItem[], error: null }),
+      tab === "gif"
+        ? extraGifSearch({ data: { query: q, page: pageNumber } })
+        : Promise.resolve({ items: [] as GiphyItem[], errors: [] as string[] }),
+    ]);
+    if (pageNumber === 0) setAdultNote([adult.error, ...extra.errors].filter(Boolean).join("; ") || null);
+    // Adult results first in each round so they aren't buried under ordinary GIFs.
+    const base = result.items as GiphyItem[];
+    const adultItems = [...adult.items, ...(extra.items as GiphyItem[])];
+    const mixed: GiphyItem[] = [];
+    for (let a = 0, b = 0; a < adultItems.length || b < base.length; a++, b += 2) {
+      const clip = adultItems[a];
+      if (clip) mixed.push(clip);
+      mixed.push(...base.slice(b, b + 2));
+    }
+    return mixed.map(toTile);
   };
 
   useEffect(() => {
@@ -227,7 +260,11 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               ))}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
-              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">Adult GIFs could not load right now (RedGifs {adultNote}). Showing other GIFs.</p>}
+              {adultNote && !loading && (
+                <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">
+                  Some adult GIF sources are unavailable ({adultNote}). Showing available results.
+                </p>
+              )}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
               {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
@@ -246,7 +283,9 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
                 </button>
               )}
             </div>
-        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">{tab === "gif" ? "Powered by KLIPY, GIPHY & RedGifs" : "Powered by KLIPY & GIPHY"}</div>
+        <div className="px-4 pb-3 text-right text-[10px] text-muted-foreground">
+          {tab === "gif" ? "Powered by KLIPY, GIPHY, RedGifs, Rule34 & Fluxpoint" : "Powered by KLIPY & GIPHY"}
+        </div>
       </div>
     </div>
   );

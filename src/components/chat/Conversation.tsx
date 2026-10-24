@@ -11,7 +11,7 @@ import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker, type PickedGif } from "./GiphyPicker";
 import { MediaEditor } from "./MediaEditor";
-import { redgifsUrl } from "@/lib/giphy.functions";
+import { freshRedgifs } from "@/lib/redgifs-client";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -1996,7 +1996,7 @@ function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: stri
   const onError = () => {
     if (refreshed || !redgifsId) { setFailed(true); return; }
     setRefreshed(true);
-    void redgifsUrl({ data: { id: redgifsId } })
+    void freshRedgifs(redgifsId)
       .then((fresh) => (fresh?.video ? setSrc(fresh.video) : setFailed(true)))
       .catch(() => setFailed(true));
   };
