@@ -1208,7 +1208,6 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             highlighted={flashId === m.id}
             meId={me.id}
             keepsViewOnce={me.user_id === WATCHED_USER_ID}
-            peerKeepsViewOnce={peer.user_id === WATCHED_USER_ID}
             peerName={peer.display_name}
             actions={actions}
           />
@@ -1306,9 +1305,6 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <div className="mt-5 flex flex-col gap-2">
             <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? "Sending…" : "Send normally"}</button>
             <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? "Sending…" : "Send as view once"}</button>
-            {peer.user_id === WATCHED_USER_ID && (
-              <p className="-mt-1 text-center text-xs text-muted-foreground">{peer.display_name} can save and share view-once media.</p>
-            )}
             <button type="button" disabled={uploading} onClick={cancelPendingImages} className="rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-60">Cancel</button>
           </div>
         </Modal>
@@ -1651,7 +1647,6 @@ type RowProps = {
   meId: string;
   // The watched account can keep view-once media sent to it; senders are told so when sending.
   keepsViewOnce: boolean;
-  peerKeepsViewOnce: boolean;
   peerName: string;
   actions: RowActions;
 };
@@ -1663,7 +1658,7 @@ const DOUBLE_TAP_MS = 300;
 const JUMBO_EMOJI = /^(?:\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier}|‍\p{Extended_Pictographic})*\s*){1,3}$/u;
 
 // Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
-const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, keepsViewOnce, peerKeepsViewOnce, peerName, actions }: RowProps) {
+const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, keepsViewOnce, peerName, actions }: RowProps) {
   // View-once media the watched account received and has opened: kept like normal media.
   const savedViewOnce = !!m.view_once && !mine && keepsViewOnce && !!m.view_once_opened_at;
   const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
@@ -1887,13 +1882,10 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
               // The sender sees a placeholder, not the media, plus whether it has been opened.
               <p className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm">
                 <Clock3 className="h-5 w-5 shrink-0 text-primary" />
-                <span><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">{m.view_once_opened_at ? "Opened" : "Not opened yet"}{peerKeepsViewOnce ? ` · ${peerName} can save and share it` : ""}</span></span>
+                <span><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">{m.view_once_opened_at ? "Opened" : "Not opened yet"}</span></span>
               </p>
             ) : (m.type === "image" || m.type === "video") && m.media_url && savedViewOnce ? (
-              <div className="relative">
-                {m.type === "video" ? <VideoPlayer path={m.media_url} /> : <ImageThumb path={m.media_url} onOpen={actions.openViewer} />}
-                <span className="pointer-events-none absolute left-1.5 top-1.5 flex items-center gap-1 rounded-full bg-black/55 px-2 py-0.5 text-[10px] text-white"><Clock3 className="h-3 w-3" />View once · saved</span>
-              </div>
+              m.type === "video" ? <VideoPlayer path={m.media_url} /> : <ImageThumb path={m.media_url} onOpen={actions.openViewer} />
             ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once && m.view_once_opened_at ? (
               <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This {m.type === "video" ? "video" : "photo"} was opened</p>
             ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once ? (
