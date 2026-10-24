@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { LoaderCircle, Search, TriangleAlert, X } from "lucide-react";
 import { giphySearch } from "@/lib/giphy.functions";
-import { naughtyStickers, ROOT_FOLDER } from "@/lib/naughty.functions";
+import { ALL_FOLDERS, naughtyStickers, ROOT_FOLDER } from "@/lib/naughty.functions";
 
 type GiphyItem = {
   id: string;
@@ -93,7 +93,7 @@ function TileImage({ tile }: { tile: Tile }) {
   const [src, setSrc] = useState(tile.thumb);
   if (src) return <img src={src} alt={tile.title || "GIF"} loading="lazy" onError={() => setSrc("")} className="h-full w-full object-cover" />;
   // NAUGHTY tiles name the file when it can't load, so a broken bucket link is visible.
-  return tile.id.startsWith("r2-") ? <span className="flex h-full w-full items-center justify-center p-1 text-center text-[10px] text-destructive">{tile.title || "Not loaded"}</span> : null;
+  return tile.id.startsWith("r2-") ? <span className="flex h-full w-full items-center justify-center p-1 text-center text-[10px] text-muted-foreground">{tile.title || "Not loaded"}</span> : null;
 }
 
 export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
@@ -110,6 +110,8 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
   const [naughtyWarn, setNaughtyWarn] = useState(false);
   const [naughtyFolders, setNaughtyFolders] = useState<string[]>([]);
   const [naughtyFolder, setNaughtyFolder] = useState("");
+  // GIF searches also count matching NAUGHTY stickers by name; the chip opens them behind the warning.
+  const [naughtyMatches, setNaughtyMatches] = useState(0);
 
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
     if (tab === "naughty") {
@@ -145,6 +147,18 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fetchPage depends on query, tab, and userId
   }, [query, tab, userId, naughtyWarn, naughtyFolder]);
 
+  useEffect(() => {
+    setNaughtyMatches(0);
+    if (tab === "naughty" || !query.trim()) return;
+    let active = true;
+    naughtyStickers({ data: { query, folder: ALL_FOLDERS, page: 0 } })
+      .then((r) => active && setNaughtyMatches(r.total))
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [query, tab]);
+
   const loadMore = () => {
     if (loadingMore) return;
     const next = page + 1;
@@ -171,9 +185,12 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
 
   const switchTab = updateTab;
   // NAUGHTY lives under Others and warns every time it is opened.
-  const openNaughty = () => {
+  const openNaughty = (search = "") => {
     setNaughtyWarn(true);
     updateTab("naughty");
+    setNaughtyFolder(search ? ALL_FOLDERS : "");
+    setInput(search);
+    setQuery(search);
   };
   const othersTab = tab === "others" || tab === "naughty";
 
@@ -198,29 +215,30 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
             {tags.map((t) => (
               <button key={t.label} type="button" onClick={() => { if (tab !== "others") updateTab("others"); setInput(t.q); setQuery(t.q); }} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${tab === "others" && query === t.q ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{t.label}</button>
             ))}
-            <button type="button" onClick={openNaughty} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-bold ${tab === "naughty" ? "bg-destructive text-destructive-foreground" : "bg-destructive/10 text-destructive hover:bg-destructive/20"}`}>{NAUGHTY_LABEL}</button>
+            <button type="button" onClick={() => openNaughty()} className={`shrink-0 whitespace-nowrap rounded-full px-3 py-1.5 text-xs font-medium ${tab === "naughty" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:bg-muted/70"}`}>{NAUGHTY_LABEL}</button>
           </div>
         )}
         {tab === "naughty" && !naughtyWarn && naughtyFolders.length > 0 && (
           <div className="flex shrink-0 gap-1 overflow-x-auto border-b px-3 [scrollbar-width:none]">
+            {naughtyFolder === ALL_FOLDERS && <span className="shrink-0 whitespace-nowrap border-b-2 border-primary px-3 py-2 text-sm font-medium text-primary">All folders</span>}
             {naughtyFolders.map((f) => (
-              <button key={f} type="button" onClick={() => { setNaughtyFolder(f); setInput(""); setQuery(""); }} className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium ${naughtyFolder === f ? "border-destructive text-destructive" : "border-transparent text-muted-foreground"}`}>{f === ROOT_FOLDER ? "More" : f}</button>
+              <button key={f} type="button" onClick={() => { setNaughtyFolder(f); setInput(""); setQuery(""); }} className={`shrink-0 whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium ${naughtyFolder === f ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{f === ROOT_FOLDER ? "More" : f}</button>
             ))}
           </div>
         )}
         {tab === "naughty" && naughtyWarn ? (
           <div role="alertdialog" aria-labelledby="naughty-warn-title" className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center">
-            <TriangleAlert className="h-12 w-12 text-destructive" />
-            <div id="naughty-warn-title" className="text-xl font-extrabold tracking-wide text-destructive">NAUGHTY</div>
+            <TriangleAlert className="h-12 w-12 text-muted-foreground" />
+            <div id="naughty-warn-title" className="text-xl font-extrabold tracking-wide">NAUGHTY</div>
             <p className="text-base font-semibold">HANDLE at Your RISK</p>
             <p className="max-w-xs text-sm text-muted-foreground">Explicit 18+ stickers. Open only if you are an adult and the person you are chatting with is fine with it.</p>
             <div className="mt-2 flex gap-2">
               <button type="button" onClick={() => { setNaughtyWarn(false); updateTab("others"); }} className="rounded-lg bg-muted px-4 py-2 text-sm font-medium text-muted-foreground hover:bg-muted/70">Go back</button>
-              <button type="button" onClick={() => setNaughtyWarn(false)} className="rounded-lg bg-destructive px-4 py-2 text-sm font-semibold text-destructive-foreground hover:bg-destructive/90">I understand, show</button>
+              <button type="button" onClick={() => setNaughtyWarn(false)} className="rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-primary-foreground hover:bg-primary/90">I understand, show</button>
             </div>
           </div>
         ) : (<>
-            <form onSubmit={(e) => { e.preventDefault(); setQuery(input.trim()); }} className="m-3 flex shrink-0 items-center gap-2 rounded-lg bg-muted px-3">
+            <form onSubmit={(e) => { e.preventDefault(); if (tab === "naughty") setNaughtyFolder(input.trim() ? ALL_FOLDERS : ""); setQuery(input.trim()); }} className="m-3 flex shrink-0 items-center gap-2 rounded-lg bg-muted px-3">
               <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
               <input value={input} onChange={(e) => setInput(e.target.value)} className="min-w-0 flex-1 bg-transparent py-2 text-sm outline-none" placeholder={tab === "naughty" ? "Search NAUGHTY stickers" : "Search GIFs"} aria-label={tab === "naughty" ? "Search NAUGHTY stickers" : "Search GIFs"} />
             </form>
@@ -230,6 +248,11 @@ export function GiphyPicker({ userId, onSelect, onClose }: GiphyPickerProps) {
               ))}
             </div>}
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
+              {tab !== "naughty" && naughtyMatches > 0 && (
+                <button type="button" onClick={() => openNaughty(query)} className="mb-3 rounded-full bg-muted px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted/70">
+                  NAUGHTY · {naughtyMatches} {naughtyMatches === 1 ? "match" : "matches"} for "{query}"
+                </button>
+              )}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {!loading && !error && tab === "naughty" && items.length === 0 && (
                 <p role="status" className="py-8 text-center text-sm text-muted-foreground">No NAUGHTY stickers found.</p>

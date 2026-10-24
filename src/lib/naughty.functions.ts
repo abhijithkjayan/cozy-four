@@ -1,10 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { listNaughtyKeys, naughtyUrl, relativeKey } from "./r2";
 
-// NAUGHTY stickers from the private R2 bucket. Each top-level folder is its own tab ("/" = files at the
-// bucket root); `query` matches file paths inside the open folder.
+// NAUGHTY stickers from the private R2 bucket. Each folder is its own tab ("/" = files at the bucket root);
+// `query` matches file names inside the open folder, or across every folder when folder is ALL_FOLDERS.
 const PER_PAGE = 48;
 export const ROOT_FOLDER = "/";
+export const ALL_FOLDERS = "*";
 // Tab order for the bucket folders; any other folder follows these alphabetically.
 const FOLDER_ORDER = ["He", "She", "Kiss", "Front", "Doggy", "Climax", "Close", "Body", "Oil", "Misc"];
 const rank = (f: string) => {
@@ -33,8 +34,9 @@ export const naughtyStickers = createServerFn({ method: "GET" })
     const keys = listed.keys.map((key) => ({ key, rel: relativeKey(key), dir: "" }));
     for (const k of keys) k.dir = folderOf(k.rel);
     const folders = [...new Set(keys.map((k) => k.dir))].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
-    const folder = folders.includes(data.folder) ? data.folder : (folders[0] ?? "");
-    const matches = keys.filter((k) => k.dir === folder && (!data.query || k.rel.toLowerCase().includes(data.query)));
+    const folder = data.folder === ALL_FOLDERS || folders.includes(data.folder) ? data.folder : (folders[0] ?? "");
+    const name = (rel: string) => rel.slice(rel.lastIndexOf("/") + 1).toLowerCase().replace(/[_-]+/g, " ");
+    const matches = keys.filter((k) => (folder === ALL_FOLDERS || k.dir === folder) && (!data.query || name(k.rel).includes(data.query.replace(/[_-]+/g, " "))));
     const items = matches.slice(data.page * PER_PAGE, (data.page + 1) * PER_PAGE).map(({ key, rel }) => ({
       id: `r2-${rel}`,
       title: rel.slice(rel.lastIndexOf("/") + 1).replace(/\.[^.]+$/, "").replace(/[_-]+/g, " "),
