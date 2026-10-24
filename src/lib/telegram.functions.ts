@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { effectiveAlertsEnabled } from "@/lib/alert-schedule";
 
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
@@ -11,16 +12,6 @@ const PRICE_TEXT = {
   live: "Price list LIVE",
   message: "Price List New Notification",
   reaction: "Price Reacted to Base",
-};
-// No price channel alerts overnight (11 PM to 7 AM Canadian Eastern time).
-const QUIET_TIME_ZONE = "America/Toronto";
-const QUIET_START_HOUR = 23;
-const QUIET_END_HOUR = 7;
-const isQuietHours = () => {
-  const hour = Number(
-    new Intl.DateTimeFormat("en-CA", { timeZone: QUIET_TIME_ZONE, hour: "numeric", hourCycle: "h23" }).format(new Date()),
-  );
-  return hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
 };
 const MAX_EVENT_AGE_MS = 2 * 60 * 1000; // ignore replays of old events
 
@@ -99,26 +90,29 @@ export const telegramAlert = createServerFn({ method: "POST" })
     // other person is offline. The online alert also follows the watched account's privacy setting.
     if (caller.user_id === WATCHED_USER_ID) {
       const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
-      if (isQuietHours()) return { sent: false, quiet: true };
-      // The other person can switch these alerts off, and gets none while online.
+      // The other person's alerts follow their switch and the night schedule (off 11 PM to 7 AM
+      // Canada Eastern, manual night-time switch-on lasts 15 minutes), and none are sent while
+      // they are online. "*" keeps this working before migration 0015 adds telegram_alerts_changed_at.
+      const alertsOnFor = (person: { telegram_alerts_enabled: boolean; telegram_alerts_changed_at?: string | null }) =>
+        effectiveAlertsEnabled(person.telegram_alerts_enabled, person.telegram_alerts_changed_at);
       const receiverBlocks = async (profileId: string) => {
         const { data: person, error } = await supabaseAdmin
           .from("profiles")
-          .select("is_online, last_seen, telegram_alerts_enabled")
+          .select("*")
           .eq("id", profileId)
           .maybeSingle();
         if (error) console.error("Telegram alert: could not read receiver settings:", error);
-        return !person || !person.telegram_alerts_enabled || isOnlineNow(person);
+        return !person || !alertsOnFor(person) || isOnlineNow(person);
       };
       if (data.kind === "login" || data.kind === "online") {
         if (!caller.show_online_status) return { sent: false };
         const { data: others, error: othersError } = await supabaseAdmin
           .from("profiles")
-          .select("is_online, last_seen, telegram_alerts_enabled")
+          .select("*")
           .neq("user_id", WATCHED_USER_ID);
         if (othersError) console.error("Telegram alert: could not read presence:", othersError);
         const people = others ?? [];
-        if (people.some(isOnlineNow) || !people.some((p) => p.telegram_alerts_enabled)) return { sent: false };
+        if (people.some(isOnlineNow) || !people.some(alertsOnFor)) return { sent: false };
         const now = Date.now();
         if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return { sent: false, cooldown: true };
         lastPriceLiveAt = now;

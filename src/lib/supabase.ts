@@ -13,6 +13,7 @@ export type Profile = {
   last_seen: string | null;
   is_online: boolean;
   telegram_alerts_enabled: boolean;
+  telegram_alerts_changed_at?: string | null;
   show_online_status: boolean;
   read_receipts_enabled: boolean;
 };

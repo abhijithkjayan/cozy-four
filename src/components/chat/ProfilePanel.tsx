@@ -10,6 +10,7 @@ import {
 import type { Tables } from "@/integrations/supabase/types";
 import { supabase, type Profile } from "@/lib/supabase";
 import { WATCHED_USER_ID } from "@/lib/telegram.functions";
+import { effectiveAlertsEnabled, nightManualOnEndsAt } from "@/lib/alert-schedule";
 import { Avatar } from "./Avatar";
 
 type LoginEvent = Tables<"login_activity">;
@@ -56,6 +57,24 @@ export function ProfilePanel({
     () => setTelegramAlertsEnabled(profile.telegram_alerts_enabled),
     [profile.id, profile.telegram_alerts_enabled],
   );
+  // Everyone except the watched account follows the night schedule (see alert-schedule.ts).
+  const isWatched = profile.user_id === WATCHED_USER_ID;
+  const [alertsChangedAt, setAlertsChangedAt] = useState(profile.telegram_alerts_changed_at ?? null);
+  useEffect(
+    () => setAlertsChangedAt(profile.telegram_alerts_changed_at ?? null),
+    [profile.id, profile.telegram_alerts_changed_at],
+  );
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    if (!open || isWatched) return;
+    setNow(new Date());
+    const timer = window.setInterval(() => setNow(new Date()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [open, isWatched]);
+  const alertsOn = isWatched
+    ? telegramAlertsEnabled
+    : effectiveAlertsEnabled(telegramAlertsEnabled, alertsChangedAt, now);
+  const alertsEndAt = isWatched ? null : nightManualOnEndsAt(telegramAlertsEnabled, alertsChangedAt, now);
   useEffect(() => {
     setShowOnlineStatus(profile.show_online_status);
     setReadReceiptsEnabled(profile.read_receipts_enabled);
@@ -101,21 +120,32 @@ export function ProfilePanel({
   }
 
   async function toggleTelegramAlerts() {
-    const enabled = !telegramAlertsEnabled;
+    const enabled = !alertsOn;
+    const changedAt = new Date().toISOString();
     setSavingSetting("telegram");
     setAlertsSaving(true);
     setAlertsError("");
     const { error: updateError } = await supabase
       .from("profiles")
-      .update({ telegram_alerts_enabled: enabled })
+      .update(
+        isWatched
+          ? { telegram_alerts_enabled: enabled }
+          : { telegram_alerts_enabled: enabled, telegram_alerts_changed_at: changedAt },
+      )
       .eq("id", profile.id);
     setAlertsSaving(false);
     setSavingSetting(null);
     if (updateError) {
-      setAlertsError(`Could not update Telegram alerts: ${updateError.message}`);
+      setAlertsError(
+        /telegram_alerts_changed_at/.test(updateError.message)
+          ? "The alert schedule is not enabled in the database yet. Apply drizzle/migrations/0015_telegram_alerts_changed_at.sql in Lovable Cloud."
+          : `Could not update Telegram alerts: ${updateError.message}`,
+      );
       return;
     }
     setTelegramAlertsEnabled(enabled);
+    if (!isWatched) setAlertsChangedAt(changedAt);
+    setNow(new Date());
     onTelegramAlertsSaved(enabled);
   }
 
@@ -267,20 +297,32 @@ export function ProfilePanel({
                 Telegram alerts
               </h3>
               <div className="flex items-center justify-between gap-3">
-                <p className="text-sm text-muted-foreground">
-                  {telegramAlertsEnabled ? "Alerts are on." : "Alerts are off."}
-                </p>
+                <div className="min-w-0">
+                  <p className="text-sm text-muted-foreground">
+                    {alertsOn
+                      ? alertsEndAt
+                        ? `Alerts are on until ${alertsEndAt.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}.`
+                        : "Alerts are on."
+                      : "Alerts are off."}
+                  </p>
+                  {!isWatched && (
+                    <p className="text-xs text-muted-foreground">
+                      Off automatically from 11 PM to 7 AM (Canada Eastern). Turning them on at
+                      night lasts 15 minutes.
+                    </p>
+                  )}
+                </div>
                 <Button
                   type="button"
                   size="sm"
                   variant="outline"
                   onClick={() => void toggleTelegramAlerts()}
                   disabled={alertsSaving}
-                  aria-pressed={telegramAlertsEnabled}
+                  aria-pressed={alertsOn}
                 >
                   {savingSetting === "telegram"
                     ? "Saving…"
-                    : telegramAlertsEnabled
+                    : alertsOn
                       ? "Turn off"
                       : "Turn on"}
                 </Button>
