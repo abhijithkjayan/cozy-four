@@ -333,6 +333,59 @@ function ImageEditor({ file, onCancel, onSave }: { file: File; onCancel: () => v
 
 const fmt = (secs: number) => `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, "0")}`;
 
+const MIN_CLIP_SECS = 0.5;
+
+/** One bar with two handles (start and end), like WhatsApp's trimmer. Drag the middle to move the whole selection. */
+function RangeBar({ duration, start, end, disabled, onChange }: { duration: number; start: number; end: number; disabled: boolean; onChange: (start: number, end: number) => void }) {
+  const bar = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ part: "start" | "end" | "both"; at: number; start: number; end: number } | null>(null);
+  const pct = (secs: number) => (duration ? (secs / duration) * 100 : 0);
+  const secsAt = (clientX: number) => {
+    const rect = bar.current!.getBoundingClientRect();
+    return Math.min(duration, Math.max(0, ((clientX - rect.left) / rect.width) * duration));
+  };
+  const onDown = (part: "start" | "end" | "both") => (event: ReactPointerEvent) => {
+    if (disabled) return;
+    event.stopPropagation();
+    (event.currentTarget as Element).setPointerCapture(event.pointerId);
+    drag.current = { part, at: secsAt(event.clientX), start, end };
+  };
+  const onMove = (event: ReactPointerEvent) => {
+    const d = drag.current;
+    if (!d) return;
+    const t = secsAt(event.clientX);
+    if (d.part === "start") onChange(Math.min(t, d.end - MIN_CLIP_SECS), d.end);
+    else if (d.part === "end") onChange(d.start, Math.max(t, d.start + MIN_CLIP_SECS));
+    else {
+      const shift = Math.min(Math.max(t - d.at, -d.start), duration - d.end);
+      onChange(d.start + shift, d.end + shift);
+    }
+  };
+  const onUp = () => {
+    drag.current = null;
+  };
+  const nudge = (part: "start" | "end") => (event: React.KeyboardEvent) => {
+    const step = event.key === "ArrowLeft" ? -0.1 : event.key === "ArrowRight" ? 0.1 : 0;
+    if (!step || disabled) return;
+    event.preventDefault();
+    if (part === "start") onChange(Math.min(Math.max(0, start + step), end - MIN_CLIP_SECS), end);
+    else onChange(start, Math.max(Math.min(duration, end + step), start + MIN_CLIP_SECS));
+  };
+  const handle = "absolute top-1/2 h-10 w-5 -translate-y-1/2 rounded-md bg-primary shadow touch-none focus:outline-none focus:ring-2 focus:ring-white";
+  return (
+    <div ref={bar} className={cn("relative mx-2.5 h-10 touch-none select-none", disabled && "opacity-50")} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp}>
+      <div className="absolute inset-x-0 top-1/2 h-2 -translate-y-1/2 rounded-full bg-white/25" />
+      <div
+        className="absolute top-1/2 h-10 -translate-y-1/2 cursor-grab border-y-4 border-primary bg-primary/25"
+        style={{ left: `${pct(start)}%`, width: `${pct(end) - pct(start)}%` }}
+        onPointerDown={onDown("both")}
+      />
+      <span role="slider" tabIndex={0} aria-label="Start" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={start} className={cn(handle, "-translate-x-full")} style={{ left: `${pct(start)}%` }} onPointerDown={onDown("start")} onKeyDown={nudge("start")} />
+      <span role="slider" tabIndex={0} aria-label="End" aria-valuemin={0} aria-valuemax={duration} aria-valuenow={end} className={handle} style={{ left: `${pct(end)}%` }} onPointerDown={onDown("end")} onKeyDown={nudge("end")} />
+    </div>
+  );
+}
+
 function pickRecorderType() {
   if (typeof MediaRecorder === "undefined") return null;
   for (const type of ["video/mp4;codecs=avc1,mp4a", "video/mp4", "video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]) {
@@ -452,14 +505,13 @@ function VideoTrimmer({ file, onCancel, onSave }: { file: File; onCancel: () => 
             <span>{fmt(Math.max(0, end - start))} selected</span>
             <span>End {fmt(end)}</span>
           </div>
-          <label className="block">
-            <span className="sr-only">Start</span>
-            <input type="range" min={0} max={duration || 0} step={0.1} value={start} disabled={busy || !duration} onChange={(e) => setRange(Math.min(Number(e.target.value), end - 0.5), end)} className="w-full accent-primary" />
-          </label>
-          <label className="block">
-            <span className="sr-only">End</span>
-            <input type="range" min={0} max={duration || 0} step={0.1} value={end} disabled={busy || !duration} onChange={(e) => setRange(start, Math.max(Number(e.target.value), start + 0.5))} className="w-full accent-primary" />
-          </label>
+          <RangeBar
+            duration={duration}
+            start={start}
+            end={end}
+            disabled={busy || !duration}
+            onChange={(nextStart, nextEnd) => setRange(nextStart, nextEnd)}
+          />
           {busy && <p className="text-center text-white/70">Plays through the selected part once to cut it. Keep this screen open.</p>}
         </div>
       }

@@ -117,6 +117,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [pendingImages, setPendingImages] = useState<{ file: File; previewUrl: string }[]>([]);
   // Which picked photo/video is open in the editor (crop, draw, text, trim) before sending.
   const [editingPending, setEditingPending] = useState<number | null>(null);
+  // Full-screen player for a view-once video; closing it ends the one viewing.
+  const [videoViewer, setVideoViewer] = useState<string | null>(null);
   const pendingImageUrls = useRef(new Set<string>());
   const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
     try {
@@ -543,7 +545,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setGalleryMessages([...(media.data ?? []), ...(links.data ?? [])] as Message[]);
   };
 
-  const galleryMedia = galleryMessages.filter((message) => ["image", "video", "gif", "sticker"].includes(message.type));
+  // View-once media never appears in the gallery, for either person (like WhatsApp).
+  const galleryMedia = galleryMessages.filter((message) => ["image", "video", "gif", "sticker"].includes(message.type) && !message.view_once);
   const galleryAudio = galleryMessages.filter((message) => message.type === "audio");
   const galleryLinks = galleryMessages.flatMap((message) => {
     if (message.type !== "text" || !message.content) return [];
@@ -766,23 +769,25 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   const openViewOnceImage = async (message: Message) => {
     if (!message.view_once || message.view_once_opened_at || message.sender_id === me.id) return;
+    const kind = message.type === "video" ? "video" : "photo";
     const { data, error } = await supabase.rpc("open_view_once_message", { p_message_id: message.id });
     if (error) {
-      alert("Could not open this photo. Please try again.");
+      alert(`Could not open this ${kind}. Please try again.`);
       return;
     }
     if (!data) {
       setMsgs((list) => list.map((item) => item.id === message.id ? { ...item, view_once_opened_at: new Date().toISOString() } : item));
-      alert("This view-once photo has already been opened.");
+      alert(`This view-once ${kind} has already been opened.`);
       return;
     }
     setMsgs((list) => list.map((item) => item.id === message.id ? { ...item, view_once_opened_at: new Date().toISOString() } : item));
     const { data: signed, error: signError } = await supabase.storage.from("chat-media").createSignedUrl(data, 60);
     if (signError || !signed?.signedUrl) {
-      alert("This photo was opened but could not be displayed.");
+      alert(`This ${kind} was opened but could not be displayed.`);
       return;
     }
-    setViewer(signed.signedUrl);
+    if (message.type === "video") setVideoViewer(signed.signedUrl);
+    else setViewer(signed.signedUrl);
   };
   const markAudioPlayed = (id: string) => {
     if (playedAudioRef.current.has(id)) return;
@@ -833,6 +838,20 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       setMsgs((current) => [...current, message].sort((a, b) => a.created_at.localeCompare(b.created_at)));
     }
     flashMessage(message.id);
+  };
+
+  // Removing a "This message was deleted" line hides it in both chats, leaving no trace.
+  const removeDeleted = async (m: Message) => {
+    const { error } = await supabase
+      .from("messages")
+      .update({ deleted_for: [m.sender_id, m.receiver_id], deleted_for_everyone: true, content: null, media_url: null })
+      .eq("id", m.id);
+    if (error) {
+      console.error("Could not remove deleted message:", error);
+      alert(`Could not remove this message: ${error.message}`);
+      return;
+    }
+    markDeletedLocally(new Set([m.id]));
   };
 
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
@@ -1065,6 +1084,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     download: (m, url, title) => void downloadAttachment(m, url, title),
     telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, ...(url ? { url } : {}) } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e: unknown) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
     pin: (m) => void togglePin(m),
+    removeDeleted: (m) => void removeDeleted(m),
     deleteForMe: (m) => void deleteForMe(m),
     deleteForAll: (m) => void deleteForAll(m),
     info: (m) => setInfoMsg(m),
@@ -1521,6 +1541,12 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           </div>
         </div>
       )}
+      {videoViewer && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-call-bg/95 p-4" onClick={() => setVideoViewer(null)}>
+          <button onClick={() => setVideoViewer(null)} className="absolute right-4 z-10 flex h-11 w-11 items-center justify-center rounded-full text-call-fg" style={{ top: "max(1rem, env(safe-area-inset-top))" }} aria-label="Close"><X className="h-6 w-6" /></button>
+          <video src={videoViewer} autoPlay playsInline controls controlsList="nodownload" disablePictureInPicture onContextMenu={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()} className="max-h-full max-w-full rounded-lg" />
+        </div>
+      )}
       {giphyOpen && <GiphyPicker onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
       {pickerMessage && (
         // Full emoji picker as its own sheet, so it can't be hidden or dismissed by the closing message menu.
@@ -1573,6 +1599,7 @@ type RowActions = {
   download: (m: Message, url?: string, title?: string) => void;
   telegram: (m: Message, url?: string) => void;
   pin: (m: Message) => void;
+  removeDeleted: (m: Message) => void;
   deleteForMe: (m: Message) => void;
   deleteForAll: (m: Message) => void;
   info: (m: Message) => void;
@@ -1782,7 +1809,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => actions.setMenu(null)}>
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => actions.deleteForMe(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => actions.removeDeleted(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
@@ -1813,10 +1840,10 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                   </DropdownMenuItem>
                   <DropdownMenuItem onClick={() => actions.reply(m)}><Reply className="mr-2 h-4 w-4" />Reply</DropdownMenuItem>
                   {mine && m.type === "text" && <DropdownMenuItem onClick={() => actions.edit(m)}><Pencil className="mr-2 h-4 w-4" />Edit message</DropdownMenuItem>}
-                  {m.type === "image" && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => actions.openViewOnce(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once photo</DropdownMenuItem>}
-                  {m.type === "image" && m.media_url && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
-                  {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
-                  {(m.media_url || attachment?.url) && (!m.view_once || mine) && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
+                  {(m.type === "image" || m.type === "video") && m.media_url && m.view_once && !mine && !m.view_once_opened_at && <DropdownMenuItem onClick={() => actions.openViewOnce(m)}><Clock3 className="mr-2 h-4 w-4" />Open view-once {m.type === "video" ? "video" : "photo"}</DropdownMenuItem>}
+                  {m.type === "image" && m.media_url && !m.view_once && <DropdownMenuItem onClick={() => actions.viewImage(m)}><ImageIcon className="mr-2 h-4 w-4" />View image</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.share(m, attachment?.url, attachment?.title)}><Share className="mr-2 h-4 w-4" />Share</DropdownMenuItem>}
+                  {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.download(m, attachment?.url, attachment?.title)}><Download className="mr-2 h-4 w-4" />Download</DropdownMenuItem>}
                   {(m.media_url || attachment?.url) && !m.view_once && <DropdownMenuItem onClick={() => actions.telegram(m, attachment?.url)}><Send className="mr-2 h-4 w-4" />Send to Telegram</DropdownMenuItem>}
                   <DropdownMenuItem onClick={() => actions.pin(m)}>{m.pinned_at ? <PinOff className="mr-2 h-4 w-4" /> : <Pin className="mr-2 h-4 w-4" />}{m.pinned_at ? "Unpin" : "Pin"}</DropdownMenuItem>
                   {mine && <DropdownMenuItem onClick={() => actions.info(m)}><Info className="mr-2 h-4 w-4" />Message info</DropdownMenuItem>}
@@ -1841,12 +1868,18 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
             )}
             {m.deleted_for_everyone ? (
               <p className="px-1 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
-            ) : m.type === "image" && m.media_url && m.view_once && !mine && m.view_once_opened_at ? (
-              <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This photo was opened</p>
-            ) : m.type === "image" && m.media_url && m.view_once && !mine ? (
+            ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once && mine ? (
+              // The sender sees a placeholder, not the media, plus whether it has been opened.
+              <p className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm">
+                <Clock3 className="h-5 w-5 shrink-0 text-primary" />
+                <span><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">{m.view_once_opened_at ? "Opened" : "Not opened yet"}</span></span>
+              </p>
+            ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once && m.view_once_opened_at ? (
+              <p className="flex items-center gap-2 px-2 py-2 text-sm italic text-muted-foreground"><Clock3 className="h-4 w-4" />This {m.type === "video" ? "video" : "photo"} was opened</p>
+            ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once ? (
               <button type="button" onClick={() => actions.openViewOnce(m)} className="flex min-w-52 items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-sm hover:bg-primary/20">
                 <Clock3 className="h-5 w-5 shrink-0 text-primary" />
-                <span className="text-left"><strong className="block">View once photo</strong><span className="text-xs text-muted-foreground">Open this photo one time</span></span>
+                <span className="text-left"><strong className="block">View once {m.type === "video" ? "video" : "photo"}</strong><span className="text-xs text-muted-foreground">Open this {m.type === "video" ? "video" : "photo"} one time</span></span>
               </button>
             ) : m.type === "video" && m.media_url ? (
               <VideoPlayer path={m.media_url} />
