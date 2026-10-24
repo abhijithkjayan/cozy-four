@@ -144,7 +144,10 @@ async function fromRedgifs(query: string, page: number): Promise<Out[]> {
     page: String(page + 1),
   });
   const res = await redgifsFetch(`/gifs/search?${params}`, viewer());
-  if (!res.ok) { console.error(`RedGifs search failed [${res.status}]: ${await res.text()}`); return []; }
+  if (!res.ok) {
+    const detail = (await res.text()).replace(/\s+/g, " ").slice(0, 160);
+    throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+  }
   const body = (await res.json()) as { gifs?: RedgifsGif[] };
   return (body.gifs ?? []).map(fromRedgifsGif).filter((g) => g.video);
 }
@@ -169,29 +172,34 @@ export const redgifsUrl = createServerFn({ method: "GET" })
   });
 
 export const giphySearch = createServerFn({ method: "GET" })
-  .validator((input: { query: string; kind: "gif" | "sticker"; page?: number }) => ({
+  // adult: false leaves RedGifs out (e.g. the Game of Thrones tab, which is GIPHY/KLIPY only).
+  .validator((input: { query: string; kind: "gif" | "sticker"; page?: number; adult?: boolean }) => ({
     query: String(input.query || "").trim().slice(0, 100),
     kind: input.kind === "sticker" ? ("sticker" as const) : ("gif" as const),
     page: Math.min(Math.max(0, Math.floor(Number(input.page) || 0)), 40),
+    adult: input.adult !== false,
   }))
-  .handler(async ({ data }) => {
+  .handler(async ({ data }): Promise<{ items: Out[]; redgifsError: string | null }> => {
+    let redgifsError: string | null = null;
     const [a, b, c] = await Promise.all([
       fromKlipy(data.query, data.kind, data.page).catch(() => []),
       fromGiphy(data.query, data.kind, data.page).catch(() => []),
-      data.kind === "gif"
+      data.kind === "gif" && data.adult
         ? fromRedgifs(data.query, data.page).catch((error: unknown) => {
             console.error("RedGifs search failed:", error);
+            redgifsError = error instanceof Error ? error.message : String(error);
             return [] as Out[];
           })
         : Promise.resolve([] as Out[]),
     ]);
     const out: Out[] = [];
     const seen = new Set<string>();
+    // Adult clips first in each round so they aren't buried under ordinary GIFs.
     for (let i = 0; i < Math.max(a.length, b.length, c.length); i++) {
-      for (const item of [a[i], b[i], c[i]]) {
+      for (const item of [c[i], a[i], b[i]]) {
         if (item && !seen.has(item.images.original.url)) { seen.add(item.images.original.url); out.push(item); }
       }
     }
-    return out;
+    return { items: out, redgifsError };
   });
 

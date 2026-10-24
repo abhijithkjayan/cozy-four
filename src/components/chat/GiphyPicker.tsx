@@ -21,7 +21,7 @@ type GiphyPickerProps = {
   onClose: () => void;
 };
 
-type Tab = "gif" | "sticker";
+type Tab = "gif" | "got" | "sticker";
 // One grid item for every source: a still or animated preview, plus what gets sent.
 type Tile = { id: string; title: string; thumb: string; video: boolean; send: PickedGif };
 
@@ -41,6 +41,17 @@ const TAGS = [
   { label: "Flirty", q: "flirty" },
   { label: "Wink", q: "wink" },
   { label: "Sexy", q: "sexy" },
+  { label: "Nude", q: "nude" },
+  { label: "Erotic", q: "erotic" },
+  { label: "Naked couple", q: "naked couple" },
+  { label: "Striptease", q: "striptease" },
+  { label: "POV", q: "pov" },
+  { label: "Lesbian", q: "lesbian" },
+  { label: "Hardcore", q: "hardcore" },
+  { label: "Blowjob", q: "blowjob" },
+  { label: "Anal", q: "anal" },
+  { label: "Creampie", q: "creampie" },
+  { label: "Cumshot", q: "cumshot" },
   { label: "Seductive", q: "seductive" },
   { label: "Hot", q: "hot" },
   { label: "Naughty", q: "naughty" },
@@ -57,8 +68,39 @@ const TAGS = [
   { label: "Oral", q: "oral" },
   { label: "Riding", q: "riding" },
   { label: "Amateur couple", q: "amateur couple" },
+  { label: "Movie kiss", q: "movie kiss" },
+  { label: "Movie romance", q: "romantic movie scene" },
+  { label: "Movie love scene", q: "movie love scene" },
   { label: "Funny", q: "funny" },
   { label: "Reactions", q: "reaction" },
+];
+// Game of Thrones tab (GIPHY and KLIPY only). Empty query = the whole series.
+const GOT_ALL = "game of thrones";
+const GOT_TAGS = [
+  { label: "All", q: "" },
+  { label: "Daenerys", q: "daenerys targaryen" },
+  { label: "Jon Snow", q: "jon snow" },
+  { label: "Tyrion", q: "tyrion lannister" },
+  { label: "Cersei", q: "cersei lannister" },
+  { label: "Arya", q: "arya stark" },
+  { label: "Sansa", q: "sansa stark" },
+  { label: "Jaime", q: "jaime lannister" },
+  { label: "Khal Drogo", q: "khal drogo" },
+  { label: "Dragons", q: "game of thrones dragon" },
+  { label: "Night King", q: "night king" },
+  { label: "Winter is coming", q: "winter is coming" },
+  { label: "Shame", q: "game of thrones shame" },
+  { label: "Hodor", q: "hodor" },
+  { label: "Joffrey", q: "joffrey" },
+  { label: "Bran", q: "bran stark" },
+  { label: "Ned Stark", q: "ned stark" },
+  { label: "Brienne", q: "brienne of tarth" },
+  { label: "The Hound", q: "the hound game of thrones" },
+  { label: "Iron Throne", q: "iron throne" },
+  { label: "Battle", q: "game of thrones battle" },
+  { label: "Love", q: "game of thrones love" },
+  { label: "Kiss", q: "game of thrones kiss" },
+  { label: "House of the Dragon", q: "house of the dragon" },
 ];
 
 const toTile = (item: GiphyItem): Tile =>
@@ -106,9 +148,15 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
+  const [adultNote, setAdultNote] = useState<string | null>(null);
   const fetchPage = async (pageNumber: number): Promise<Tile[]> => {
-    const q = query || DEFAULT_QUERY;
-    return ((await giphySearch({ data: { query: q, kind: tab, page: pageNumber } })) as GiphyItem[]).map(toTile);
+    const q = tab === "got" ? query || GOT_ALL : query || DEFAULT_QUERY;
+    const result = await giphySearch({
+      data: { query: q, kind: tab === "sticker" ? "sticker" : "gif", page: pageNumber, adult: tab === "gif" },
+    });
+    // Explains an empty adult section instead of failing silently.
+    if (pageNumber === 0) setAdultNote(tab === "gif" ? result.redgifsError : null);
+    return (result.items as GiphyItem[]).map(toTile);
   };
 
   useEffect(() => {
@@ -155,7 +203,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
     setItems([]);
   };
 
-  const tags = tab === "gif" ? TAGS : TAGS.slice(0, 13);
+  const tags = tab === "gif" ? TAGS : tab === "got" ? GOT_TAGS : TAGS.slice(0, 13);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 sm:items-center" onClick={onClose}>
@@ -165,7 +213,7 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
           <button onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground hover:bg-muted" aria-label="Close GIF picker"><X className="h-5 w-5" /></button>
         </div>
         <div className="flex shrink-0 gap-1 border-b px-4 pt-2">
-          {([["gif", "GIFs"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
+          {([["gif", "GIFs"], ["got", "Game of Thrones"], ["sticker", "Stickers"]] as const).map(([value, label]) => (
             <button key={value} onClick={() => switchTab(value)} className={`border-b-2 px-3 py-2 text-sm font-medium ${tab === value ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>{label}</button>
           ))}
         </div>
@@ -179,12 +227,13 @@ export function GiphyPicker({ onSelect, onClose }: GiphyPickerProps) {
               ))}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-3 pt-3">
+              {adultNote && !loading && <p className="mb-2 rounded-md bg-muted px-2 py-1.5 text-xs text-muted-foreground">Adult GIFs could not load right now (RedGifs {adultNote}). Showing other GIFs.</p>}
               {loading && <div className="flex justify-center py-8 text-muted-foreground"><LoaderCircle className="h-6 w-6 animate-spin" /></div>}
               {error && <p className="px-3 py-8 text-center text-sm text-muted-foreground">{error}</p>}
               {!loading && !error && !items.length && <p className="px-3 py-8 text-center text-sm text-muted-foreground">No results.</p>}
               {!loading && !error && <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
                 {items.map((item) => (
-                  <button key={item.id} onClick={() => onSelect(item.send, tab)} className="relative aspect-square overflow-hidden rounded-lg bg-muted focus:outline-none focus:ring-2 focus:ring-ring" aria-label={`Send ${item.title || "GIF"}`}>
+                  <button key={item.id} onClick={() => onSelect(item.send, tab === "sticker" ? "sticker" : "gif")} className="relative aspect-square overflow-hidden rounded-lg bg-muted focus:outline-none focus:ring-2 focus:ring-ring" aria-label={`Send ${item.title || "GIF"}`}>
                     <TileImage tile={item} />
                     {item.video && <span className="absolute bottom-1 right-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/60 text-white"><Play className="h-3 w-3" /></span>}
                   </button>

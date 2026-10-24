@@ -62,6 +62,31 @@ function extractMessageLinks(content: string) {
   return links;
 }
 
+// RedGifs links (redgifs.com/watch/ID, /ifr/ID or v3.redgifs.com/watch/ID) play inline in the chat.
+const REDGIFS_LINK = /(?:^|\/\/)(?:www\.|v3\.)?redgifs\.com\/(?:watch|ifr)\/([a-z0-9]+)/i;
+function redgifsIdIn(content: string | null) {
+  if (!content) return null;
+  for (const { href } of extractMessageLinks(content)) {
+    const id = REDGIFS_LINK.exec(href)?.[1];
+    if (id) return id.toLowerCase();
+  }
+  return null;
+}
+
+/** RedGifs' own embedded player: it loads straight from RedGifs on the viewer's device. */
+function RedgifsEmbed({ id }: { id: string }) {
+  return (
+    <iframe
+      src={`https://www.redgifs.com/ifr/${id}`}
+      title="RedGifs clip"
+      loading="lazy"
+      allow="autoplay; fullscreen; encrypted-media"
+      allowFullScreen
+      className="mt-1 block aspect-[9/16] max-h-80 w-56 rounded-lg border-0 bg-muted"
+    />
+  );
+}
+
 function renderLinkedText(content: string): ReactNode[] {
   const links = extractMessageLinks(content);
   const nodes: ReactNode[] = [];
@@ -1913,7 +1938,10 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
             ) : jumbo ? (
               <p className="px-1 text-5xl leading-tight">{m.content?.trim()}</p>
             ) : (
-              <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
+              <>
+                <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
+                {m.type === "text" && redgifsIdIn(m.content) && <RedgifsEmbed id={redgifsIdIn(m.content)!} />}
+              </>
             )}
             <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
               <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
@@ -1972,6 +2000,7 @@ function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: stri
       .then((fresh) => (fresh?.video ? setSrc(fresh.video) : setFailed(true)))
       .catch(() => setFailed(true));
   };
+  if (failed && redgifsId) return <RedgifsEmbed id={redgifsId.toLowerCase()} />;
   if (failed) return <p className="px-1 text-sm italic text-muted-foreground">Clip unavailable</p>;
   return (
     <video
