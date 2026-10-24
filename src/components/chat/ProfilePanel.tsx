@@ -10,7 +10,7 @@ import {
 import type { Tables } from "@/integrations/supabase/types";
 import { supabase, type Profile } from "@/lib/supabase";
 import { WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { effectiveAlertsEnabled, nightManualOnEndsAt } from "@/lib/alert-schedule";
+import { ALERT_SCHEDULE_ACTIVE, effectiveAlertsEnabled, nightManualOnEndsAt } from "@/lib/alert-schedule";
 import { Avatar } from "./Avatar";
 
 type LoginEvent = Tables<"login_activity">;
@@ -305,7 +305,7 @@ export function ProfilePanel({
                         : "Alerts are on."
                       : "Alerts are off."}
                   </p>
-                  {!isWatched && (
+                  {!isWatched && ALERT_SCHEDULE_ACTIVE && (
                     <p className="text-xs text-muted-foreground">
                       Off automatically from 11 PM to 7 AM (Canada Eastern). Turning them on at
                       night lasts 15 minutes.
