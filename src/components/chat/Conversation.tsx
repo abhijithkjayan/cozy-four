@@ -9,7 +9,9 @@ import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
-import { GiphyPicker } from "./GiphyPicker";
+import { GiphyPicker, type PickedGif } from "./GiphyPicker";
+import { MediaEditor } from "./MediaEditor";
+import { redgifsUrl } from "@/lib/giphy.functions";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -113,6 +115,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const imagePointers = useRef(new Map<number, ImagePointer>());
   const imageGesture = useRef<ImageGesture | null>(null);
   const [pendingImages, setPendingImages] = useState<{ file: File; previewUrl: string }[]>([]);
+  // Which picked photo/video is open in the editor (crop, draw, text, trim) before sending.
+  const [editingPending, setEditingPending] = useState<number | null>(null);
   const pendingImageUrls = useRef(new Set<string>());
   const [playedAudio, setPlayedAudio] = useState<Set<string>>(() => {
     try {
@@ -639,6 +643,20 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setPendingImages(selected);
   };
 
+  const replacePending = (index: number, file: File) => {
+    setPendingImages((list) =>
+      list.map((item, i) => {
+        if (i !== index) return item;
+        URL.revokeObjectURL(item.previewUrl);
+        pendingImageUrls.current.delete(item.previewUrl);
+        const previewUrl = URL.createObjectURL(file);
+        pendingImageUrls.current.add(previewUrl);
+        return { file, previewUrl };
+      }),
+    );
+    setEditingPending(null);
+  };
+
   const sendImages = async (viewOnce: boolean) => {
     const selected = [...pendingImages];
     if (!selected.length) return;
@@ -666,7 +684,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     if (path) insert({ type: "audio", media_url: path, content: String(Math.round(secs)) });
   };
 
-  const sendGiphy = (kind: "gif" | "sticker", item: { url: string; preview: string; title: string }) => {
+  const sendGiphy = (kind: "gif" | "sticker", item: PickedGif) => {
     setGiphyOpen(false);
     insert({ type: kind, content: JSON.stringify(item) });
   };
@@ -1248,16 +1266,30 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <h3 className="text-base font-semibold">Send {pendingImages.length === 1 ? "photo" : `${pendingImages.length} photos`}?</h3>
           <p className="mt-1 text-sm text-muted-foreground">Choose how {pendingImages.length === 1 ? "this photo is" : "these photos are"} sent to {peer.display_name}.</p>
           <div className="mt-4 grid max-h-56 grid-cols-3 gap-2 overflow-y-auto">
-            {pendingImages.map(({ file, previewUrl }) => (
-              file.type.startsWith("video/") ? <video key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} muted playsInline className="aspect-square w-full rounded-lg object-cover" /> : <img key={`${file.name}:${file.size}:${previewUrl}`} src={previewUrl} alt={file.name} className="aspect-square w-full rounded-lg object-cover" />
+            {pendingImages.map(({ file, previewUrl }, index) => (
+              <div key={`${file.name}:${file.size}:${previewUrl}`} className="relative">
+                {file.type.startsWith("video/") ? <video src={previewUrl} muted playsInline className="aspect-square w-full rounded-lg object-cover" /> : <img src={previewUrl} alt={file.name} className="aspect-square w-full rounded-lg object-cover" />}
+                <button type="button" disabled={uploading} onClick={() => setEditingPending(index)} className="absolute bottom-1 right-1 flex h-8 items-center gap-1 rounded-full bg-black/60 px-2 text-xs text-white disabled:opacity-40" aria-label={file.type.startsWith("video/") ? "Trim video" : "Edit photo"}>
+                  <Pencil className="h-3.5 w-3.5" />{file.type.startsWith("video/") ? "Trim" : "Edit"}
+                </button>
+              </div>
             ))}
           </div>
+          <p className="mt-2 text-xs text-muted-foreground">Tap Edit to crop, rotate, draw or add text, or Trim to cut a video.</p>
           <div className="mt-5 flex flex-col gap-2">
             <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? "Sending…" : "Send normally"}</button>
             <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? "Sending…" : "Send as view once"}</button>
             <button type="button" disabled={uploading} onClick={cancelPendingImages} className="rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-60">Cancel</button>
           </div>
         </Modal>
+      )}
+
+      {editingPending !== null && pendingImages[editingPending] && (
+        <MediaEditor
+          file={pendingImages[editingPending].file}
+          onCancel={() => setEditingPending(null)}
+          onSave={(file) => replacePending(editingPending, file)}
+        />
       )}
 
       {infoMsg && (
@@ -1399,6 +1431,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
                             </span>
                           ) : (message.type === "image" || message.type === "video") && message.media_url ? (
                             <GalleryThumb path={message.media_url} video={message.type === "video"} />
+                          ) : attachment?.video && attachment.preview ? (
+                            <img src={attachment.preview} alt={attachment.title || "Clip"} className="h-full w-full object-cover" />
                           ) : attachment?.url ? (
                             <img src={attachment.url} alt={attachment.title || message.type} className="h-full w-full object-cover" />
                           ) : null}
@@ -1825,6 +1859,8 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 <MapPin className="h-5 w-5 shrink-0 text-primary" />
                 <span><strong className="block">Current location</strong><span className="text-xs text-muted-foreground">Open in Google Maps</span></span>
               </a>
+            ) : m.type === "gif" && attachment?.video && attachment.url ? (
+              <ClipGif url={attachment.url} poster={attachment.preview} redgifsId={attachment.redgifsId} title={attachment.title} />
             ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
               <button onClick={() => actions.openViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
                 <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
@@ -1873,9 +1909,39 @@ function GalleryThumb({ path, video }: { path: string; video: boolean }) {
   );
 }
 
-function parseAttachment(content: string | null): { url?: string; title?: string; mapsUrl?: string } | null {
+type Attachment = { url?: string; title?: string; mapsUrl?: string; preview?: string; video?: boolean; redgifsId?: string };
+function parseAttachment(content: string | null): Attachment | null {
   if (!content) return null;
-  try { return JSON.parse(content) as { url?: string; title?: string; mapsUrl?: string }; } catch { return null; }
+  try { return JSON.parse(content) as Attachment; } catch { return null; }
+}
+
+/** Looping muted clip (18+ GIFs are MP4s). If the saved link has expired, ask for a fresh one once. */
+function ClipGif({ url, poster, redgifsId, title }: { url: string; poster?: string | undefined; redgifsId?: string | undefined; title?: string | undefined }) {
+  const [src, setSrc] = useState(url);
+  const [refreshed, setRefreshed] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const onError = () => {
+    if (refreshed || !redgifsId) { setFailed(true); return; }
+    setRefreshed(true);
+    void redgifsUrl({ data: { id: redgifsId } })
+      .then((fresh) => (fresh?.video ? setSrc(fresh.video) : setFailed(true)))
+      .catch(() => setFailed(true));
+  };
+  if (failed) return <p className="px-1 text-sm italic text-muted-foreground">Clip unavailable</p>;
+  return (
+    <video
+      src={src}
+      poster={poster}
+      autoPlay
+      loop
+      muted
+      playsInline
+      preload="metadata"
+      onError={onError}
+      aria-label={title || "GIF"}
+      className="block max-h-72 max-w-64 rounded-lg bg-muted object-cover"
+    />
+  );
 }
 
 function Tick({ on }: { on: boolean }) {
