@@ -89,6 +89,15 @@ export const telegramAlert = createServerFn({ method: "POST" })
     // other person is offline. The online alert also follows the watched account's privacy setting.
     if (caller.user_id === WATCHED_USER_ID) {
       const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
+      // Every outcome is logged so a missing alert can be traced in the server logs.
+      const skip = (reason: string) => {
+        console.log(`Price alert (${data.kind}) skipped: ${reason}`);
+        return { sent: false, reason };
+      };
+      const sent = (ok: boolean, what: string) => {
+        console.log(`Price alert (${what}) to ${priceChatId}: ${ok ? "sent" : "Telegram refused, see error above"}`);
+        return ok ? { sent: true } : { sent: false, reason: "Telegram refused the message (check T_BOT and that the bot is an admin of the channel)" };
+      };
       // Price channel alerts are always on (no switch, no night schedule, no migration needed);
       // none are sent while the other person is online.
       const alertsOnFor = (_person: unknown) => true;
@@ -102,43 +111,43 @@ export const telegramAlert = createServerFn({ method: "POST" })
         return !person || !alertsOnFor(person) || isOnlineNow(person);
       };
       if (data.kind === "login" || data.kind === "online") {
-        if (!caller.show_online_status) return { sent: false };
+        if (!caller.show_online_status) return skip("Alpha hides online status");
         const { data: others, error: othersError } = await supabaseAdmin
           .from("profiles")
           .select("*")
           .neq("user_id", WATCHED_USER_ID);
         if (othersError) console.error("Telegram alert: could not read presence:", othersError);
         const people = others ?? [];
-        if (people.some(isOnlineNow) || !people.some(alertsOnFor)) return { sent: false };
+        if (people.some(isOnlineNow)) return skip("another account is online");
         const now = Date.now();
-        if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return { sent: false, cooldown: true };
+        if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return skip("LIVE sent less than 60s ago");
         lastPriceLiveAt = now;
-        return { sent: await sendTelegram(PRICE_TEXT.live, priceChatId) };
+        return sent(await sendTelegram(PRICE_TEXT.live, priceChatId), "LIVE");
       }
-      if (data.kind === "nudge") return { sent: false };
+      if (data.kind === "nudge") return skip("nudges from Alpha are not sent");
       const { data: own, error: ownError } = await supabaseAdmin
         .from("messages")
         .select("id, sender_id, receiver_id, created_at")
         .eq("id", data.messageId)
         .maybeSingle();
       if (ownError) console.error("Telegram alert: could not read message:", ownError);
-      if (!own) return { sent: false };
+      if (!own) return skip("message not found");
       if (data.kind === "message") {
-        if (own.sender_id !== callerId || !isRecent(own.created_at)) return { sent: false };
-        if (await receiverBlocks(own.receiver_id)) return { sent: false };
-        return { sent: await sendTelegram(PRICE_TEXT.message, priceChatId) };
+        if (own.sender_id !== callerId || !isRecent(own.created_at)) return skip("not a fresh message from Alpha");
+        if (await receiverBlocks(own.receiver_id)) return skip("receiver is online");
+        return sent(await sendTelegram(PRICE_TEXT.message, priceChatId), "message");
       }
-      if (own.sender_id !== callerId && own.receiver_id !== callerId) return { sent: false };
+      if (own.sender_id !== callerId && own.receiver_id !== callerId) return skip("not Alpha's chat");
       const { data: ownReaction } = await supabaseAdmin
         .from("message_reactions")
         .select("emoji")
         .eq("message_id", own.id)
         .eq("user_id", callerId)
         .maybeSingle();
-      if (!ownReaction) return { sent: false };
+      if (!ownReaction) return skip("reaction not found");
       const otherId = own.sender_id === callerId ? own.receiver_id : own.sender_id;
-      if (await receiverBlocks(otherId)) return { sent: false };
-      return { sent: await sendTelegram(PRICE_TEXT.reaction, priceChatId) };
+      if (await receiverBlocks(otherId)) return skip("receiver is online");
+      return sent(await sendTelegram(PRICE_TEXT.reaction, priceChatId), "reaction");
     }
     if (data.kind === "online") return { sent: false };
 
@@ -245,9 +254,11 @@ export function sendTelegramAlert(input: AlertInput) {
     if (input.kind === "online" && now - lastOnlineAlertAt < ONLINE_ALERT_GAP_MS) return;
     lastOnlineAlertAt = now;
   }
-  void telegramAlert({ data: input }).catch((error: unknown) =>
-    console.error("Telegram alert request failed:", error),
-  );
+  void telegramAlert({ data: input })
+    .then((result: { sent: boolean; reason?: string }) => {
+      if (!result.sent && result.reason) console.info(`Telegram alert (${input.kind}) not sent: ${result.reason}`);
+    })
+    .catch((error: unknown) => console.error("Telegram alert request failed:", error));
 }
 
 /** Sends a chat photo/video/file (or GIF link) to the Telegram channel. Caller must be able to read the message (RLS). */
