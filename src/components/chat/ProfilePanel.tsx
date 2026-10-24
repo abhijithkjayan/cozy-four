@@ -290,8 +290,8 @@ export function ProfilePanel({
               {alertsError && <p className="mt-2 text-sm text-destructive">{alertsError}</p>}
             </section>
         )}
-        {/* Alpha's toggle controls alerts about others; everyone else's controls price channel alerts about Alpha. */}
-        {editable && (
+        {/* Alpha's toggle controls alerts about others. Price channel alerts about Alpha are always on, so others get no toggle. */}
+        {editable && isWatched && (
             <section aria-labelledby="telegram-alerts-heading">
               <h3 id="telegram-alerts-heading" className="mb-2 text-sm font-semibold">
                 Telegram alerts

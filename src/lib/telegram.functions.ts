@@ -1,6 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { effectiveAlertsEnabled } from "@/lib/alert-schedule";
 
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
@@ -90,11 +89,9 @@ export const telegramAlert = createServerFn({ method: "POST" })
     // other person is offline. The online alert also follows the watched account's privacy setting.
     if (caller.user_id === WATCHED_USER_ID) {
       const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
-      // The other person's alerts follow their switch and the night schedule (off 11 PM to 7 AM
-      // Canada Eastern, manual night-time switch-on lasts 15 minutes), and none are sent while
-      // they are online. "*" keeps this working before migration 0015 adds telegram_alerts_changed_at.
-      const alertsOnFor = (person: { telegram_alerts_enabled: boolean; telegram_alerts_changed_at?: string | null }) =>
-        effectiveAlertsEnabled(person.telegram_alerts_enabled, person.telegram_alerts_changed_at);
+      // Price channel alerts are always on (no switch, no night schedule, no migration needed);
+      // none are sent while the other person is online.
+      const alertsOnFor = (_person: unknown) => true;
       const receiverBlocks = async (profileId: string) => {
         const { data: person, error } = await supabaseAdmin
           .from("profiles")
