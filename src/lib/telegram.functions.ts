@@ -12,6 +12,16 @@ const PRICE_TEXT = {
   message: "Price List New Notification",
   reaction: "Price Reacted to Base",
 };
+// No price channel alerts overnight (11 PM to 7 AM Canadian Eastern time).
+const QUIET_TIME_ZONE = "America/Toronto";
+const QUIET_START_HOUR = 23;
+const QUIET_END_HOUR = 7;
+const isQuietHours = () => {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-CA", { timeZone: QUIET_TIME_ZONE, hour: "numeric", hourCycle: "h23" }).format(new Date()),
+  );
+  return hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR;
+};
 const MAX_EVENT_AGE_MS = 2 * 60 * 1000; // ignore replays of old events
 
 type AlertInput =
@@ -89,23 +99,26 @@ export const telegramAlert = createServerFn({ method: "POST" })
     // other person is offline. The online alert also follows the watched account's privacy setting.
     if (caller.user_id === WATCHED_USER_ID) {
       const priceChatId = process.env["T_PRICE_CHAT_ID"] || DEFAULT_PRICE_CHAT_ID;
-      const isPersonOnline = async (profileId: string) => {
+      if (isQuietHours()) return { sent: false, quiet: true };
+      // The other person can switch these alerts off, and gets none while online.
+      const receiverBlocks = async (profileId: string) => {
         const { data: person, error } = await supabaseAdmin
           .from("profiles")
-          .select("is_online, last_seen")
+          .select("is_online, last_seen, telegram_alerts_enabled")
           .eq("id", profileId)
           .maybeSingle();
-        if (error) console.error("Telegram alert: could not read receiver presence:", error);
-        return !!person && isOnlineNow(person);
+        if (error) console.error("Telegram alert: could not read receiver settings:", error);
+        return !person || !person.telegram_alerts_enabled || isOnlineNow(person);
       };
       if (data.kind === "login" || data.kind === "online") {
         if (!caller.show_online_status) return { sent: false };
         const { data: others, error: othersError } = await supabaseAdmin
           .from("profiles")
-          .select("is_online, last_seen")
+          .select("is_online, last_seen, telegram_alerts_enabled")
           .neq("user_id", WATCHED_USER_ID);
         if (othersError) console.error("Telegram alert: could not read presence:", othersError);
-        if ((others ?? []).some(isOnlineNow)) return { sent: false };
+        const people = others ?? [];
+        if (people.some(isOnlineNow) || !people.some((p) => p.telegram_alerts_enabled)) return { sent: false };
         const now = Date.now();
         if (now - lastPriceLiveAt < ONLINE_COOLDOWN_MS) return { sent: false, cooldown: true };
         lastPriceLiveAt = now;
@@ -121,7 +134,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
       if (!own) return { sent: false };
       if (data.kind === "message") {
         if (own.sender_id !== callerId || !isRecent(own.created_at)) return { sent: false };
-        if (await isPersonOnline(own.receiver_id)) return { sent: false };
+        if (await receiverBlocks(own.receiver_id)) return { sent: false };
         return { sent: await sendTelegram(PRICE_TEXT.message, priceChatId) };
       }
       if (own.sender_id !== callerId && own.receiver_id !== callerId) return { sent: false };
@@ -133,7 +146,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
         .maybeSingle();
       if (!ownReaction) return { sent: false };
       const otherId = own.sender_id === callerId ? own.receiver_id : own.sender_id;
-      if (await isPersonOnline(otherId)) return { sent: false };
+      if (await receiverBlocks(otherId)) return { sent: false };
       return { sent: await sendTelegram(PRICE_TEXT.reaction, priceChatId) };
     }
     if (data.kind === "online") return { sent: false };

@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { AudioPlayer, ImageThumb, VideoPlayer } from "./Media";
+import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker } from "./GiphyPicker";
 import { useCalls } from "./Calls";
@@ -17,7 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import type { EmojiStyle } from "emoji-picker-react";
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
 
-const PAGE = 30;
+const PAGE = 60;
 const MAX_PINS = 3;
 const MAX_IMAGE_ZOOM = 5;
 const QUICK_REACTIONS = ["❤️", "😂", "👍", "😮", "😢", "🙏"];
@@ -100,6 +100,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [pinIndex, setPinIndex] = useState(0);
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
+  const loadingRef = useRef(false);
   const [text, setText] = useState("");
   const [reply, setReply] = useState<Message | null>(null);
   const [editing, setEditing] = useState<Message | null>(null);
@@ -289,6 +290,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   }, [peer.id, me.id, me.read_receipts_enabled, onSeen]);
 
   const load = useCallback(async (before?: string) => {
+    if (loadingRef.current) return;
+    loadingRef.current = true;
     setLoading(true);
     let q = supabase.from("messages").select("*").or(pairFilter(me.id, peer.id)).order("created_at", { ascending: false }).limit(PAGE);
     if (before) q = q.lt("created_at", before);
@@ -309,6 +312,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       }
     }
     setMsgs((m) => (before ? [...rows, ...m] : rows));
+    // Ready for the next page straight away; reactions fill in afterwards.
+    loadingRef.current = false;
+    setLoading(false);
     if (rows.length) {
       const ids = rows.map((message) => message.id);
       const { data: reactionRows, error: reactionError } = await supabase
@@ -324,7 +330,6 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
         ]);
       }
     }
-    setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- unreadCount is fixed for the life of this chat view
   }, [me.id, peer.id]);
 
@@ -430,14 +435,16 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       return;
     }
     if (prevHeight.current !== null) {
-      el.scrollTop = el.scrollHeight - prevHeight.current;
+      // Keep the same messages under the finger: shift by the height that was added above.
+      el.scrollTop += el.scrollHeight - prevHeight.current;
       prevHeight.current = null;
     } else if (keepBottom.current) el.scrollTop = el.scrollHeight;
   }, [msgs]);
 
   const onScroll = () => {
     const el = scroller.current;
-    if (el && el.scrollTop < 60 && hasMore && !loading && msgs.length) load(msgs[0]!.created_at);
+    // Start fetching older messages well before the top so scrolling up doesn't stall.
+    if (el && el.scrollTop < Math.max(600, el.clientHeight * 1.5) && hasMore && !loadingRef.current && msgs.length) void load(msgs[0]!.created_at);
     if (el) {
       const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
       setShowDown(fromBottom > 300);
@@ -532,7 +539,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setGalleryMessages([...(media.data ?? []), ...(links.data ?? [])] as Message[]);
   };
 
-  const galleryMedia = galleryMessages.filter((message) => ["image", "gif", "sticker"].includes(message.type));
+  const galleryMedia = galleryMessages.filter((message) => ["image", "video", "gif", "sticker"].includes(message.type));
   const galleryAudio = galleryMessages.filter((message) => message.type === "audio");
   const galleryLinks = galleryMessages.flatMap((message) => {
     if (message.type !== "text" || !message.content) return [];
@@ -898,25 +905,6 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     }
     return true;
   };
-  const hideForEveryone = async (rows: { id: string; sender_id: string; receiver_id: string; deleted_for: string[] | null }[]) => {
-    for (let i = 0; i < rows.length; i += 15) {
-      const results = await Promise.all(
-        rows.slice(i, i + 15).map((r) =>
-          supabase
-            .from("messages")
-            .update({
-              deleted_for: [...new Set([...(r.deleted_for ?? []), r.sender_id, r.receiver_id])],
-              deleted_for_everyone: true,
-              content: null,
-              media_url: null,
-            })
-            .eq("id", r.id),
-        ),
-      );
-      if (results.some((r) => r.error)) return false;
-    }
-    return true;
-  };
   const doClearForMe = async () => {
     setBusyOp(true);
     const { data, error } = await supabase.from("messages").select("id, deleted_for").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`);
@@ -930,13 +918,19 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   };
   const doClearForEveryone = async () => {
     setBusyOp(true);
-    const { data, error } = await supabase
+    // One bulk update for the whole chat. Row-by-row updates only reached the first
+    // 1000 messages and failed part-way on long chats. Only the two people in the chat
+    // can appear in deleted_for, so setting both ids is the same as adding them.
+    const { error } = await supabase
       .from("messages")
-      .select("id, sender_id, receiver_id, deleted_for")
+      .update({ deleted_for: [me.id, peer.id], deleted_for_everyone: true, content: null, media_url: null, pinned_at: null, pinned_by: null })
       .or(pairFilter(me.id, peer.id));
-    const ok = !error && (await hideForEveryone((data ?? []) as { id: string; sender_id: string; receiver_id: string; deleted_for: string[] | null }[]));
     setBusyOp(false);
-    if (!ok) return alert("Could not clear chat for everyone. Please try again.");
+    if (error) {
+      console.error("Could not clear chat for everyone:", error);
+      return alert(`Could not clear chat for everyone: ${error.message}`);
+    }
+    setPins([]);
     setMsgs((list) =>
       list.map((m) => ({
         ...m,
@@ -1150,8 +1144,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       })()}
 
       <div className="relative min-h-0 flex-1">
+      {loading && hasMore && msgs.length > 0 && <div className="pointer-events-none absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded-full bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow">Loading…</div>}
       <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 md:px-[8%]">
-        {loading && hasMore && <div className="py-2 text-center text-xs text-muted-foreground">Loading…</div>}
         {rows.map(({ m, day, first }) => (
           <MessageRow
             key={m.id}
@@ -1392,6 +1386,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
                             if (isViewOnce) {
                               if (!message.view_once_opened_at) void openViewOnceImage(message);
                             } else if (message.type === "image" && message.media_url) void viewImage(message);
+                            else if (message.type === "video") jumpToGalleryMessage(message);
                             else if (attachment?.url) setViewer(attachment.url);
                           }}
                           className="relative aspect-square overflow-hidden rounded-md bg-muted text-left"
@@ -1402,8 +1397,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
                               <Clock3 className="h-5 w-5 text-primary" />
                               {message.view_once_opened_at ? "Opened" : "View once"}
                             </span>
-                          ) : message.type === "image" && message.media_url ? (
-                            <ImageThumb path={message.media_url} onOpen={setViewer} />
+                          ) : (message.type === "image" || message.type === "video") && message.media_url ? (
+                            <GalleryThumb path={message.media_url} video={message.type === "video"} />
                           ) : attachment?.url ? (
                             <img src={attachment.url} alt={attachment.title || message.type} className="h-full w-full object-cover" />
                           ) : null}
@@ -1745,6 +1740,18 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 <span className="animate-heart-burst"><AppleEmoji emoji="❤️" size={44} /></span>
               </span>
             )}
+            {m.deleted_for_everyone && (
+              // "This message was deleted" placeholders can still be removed from your own view.
+              <DropdownMenu open={menuOpen} onOpenChange={(open) => actions.setMenu(open ? m.id : null)}>
+                <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
+                  <ChevronDown className="h-4 w-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => actions.setMenu(null)}>
+                  <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => actions.deleteForMe(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete</DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             {!m.deleted_for_everyone && (
               <DropdownMenu open={menuOpen} onOpenChange={(open) => actions.setMenu(open ? m.id : null)}>
                 <DropdownMenuTrigger className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground opacity-0 transition group-hover:opacity-100 focus:opacity-100 data-[state=open]:opacity-100 max-md:opacity-60" aria-label="Message options">
@@ -1852,6 +1859,19 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
     </>
   );
 });
+
+/** Square gallery tile that fills its cell; videos show their first frame with a play badge. */
+function GalleryThumb({ path, video }: { path: string; video: boolean }) {
+  const url = useSigned(path);
+  if (!url) return <span className="block h-full w-full animate-pulse bg-muted" />;
+  if (!video) return <img src={url} alt="Photo" loading="lazy" className="h-full w-full object-cover" />;
+  return (
+    <>
+      <video src={`${url}#t=0.1`} muted playsInline preload="metadata" className="pointer-events-none h-full w-full object-cover" />
+      <span className="absolute left-1/2 top-1/2 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-white"><Video className="h-4 w-4" /></span>
+    </>
+  );
+}
 
 function parseAttachment(content: string | null): { url?: string; title?: string; mapsUrl?: string } | null {
   if (!content) return null;

@@ -197,7 +197,6 @@ export function ProfilePanel({
         </section>
 
         {editable && profile.user_id === WATCHED_USER_ID && (
-          <>
             <section aria-labelledby="privacy-settings-heading">
               <h3 id="privacy-settings-heading" className="mb-2 text-sm font-semibold">
                 Privacy
@@ -260,6 +259,9 @@ export function ProfilePanel({
               </div>
               {alertsError && <p className="mt-2 text-sm text-destructive">{alertsError}</p>}
             </section>
+        )}
+        {/* Alpha's toggle controls alerts about others; everyone else's controls price channel alerts about Alpha. */}
+        {editable && (
             <section aria-labelledby="telegram-alerts-heading">
               <h3 id="telegram-alerts-heading" className="mb-2 text-sm font-semibold">
                 Telegram alerts
@@ -283,9 +285,8 @@ export function ProfilePanel({
                       : "Turn on"}
                 </Button>
               </div>
-              {alertsError && <p className="mt-2 text-sm text-destructive">{alertsError}</p>}
+              {profile.user_id !== WATCHED_USER_ID && alertsError && <p className="mt-2 text-sm text-destructive">{alertsError}</p>}
             </section>
-          </>
         )}
 
         <section aria-labelledby="login-history-heading">
