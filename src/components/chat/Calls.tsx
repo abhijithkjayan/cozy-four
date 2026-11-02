@@ -1,12 +1,13 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { Mic, MicOff, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
+import { Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
 import { loadIceServers } from "@/lib/ice";
 import { startRing, stopRing, notify } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
 import { idleState } from "@/lib/security";
 import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
+import { firstCallWins } from "@/lib/callOrder";
 import { Avatar } from "./Avatar";
 import { cn } from "@/lib/utils";
 
@@ -15,11 +16,15 @@ type Sig = {
   callId: string;
   from: string;
   video?: boolean;
+  ts?: string;
+  restart?: boolean;
   sdp?: RTCSessionDescriptionInit;
   cand?: RTCIceCandidateInit;
 };
-type Info = { id: string; peer: Profile; video: boolean; role: "caller" | "callee"; offer?: RTCSessionDescriptionInit | undefined };
+type Info = { id: string; peer: Profile; video: boolean; role: "caller" | "callee"; ts?: string | undefined; offer?: RTCSessionDescriptionInit | undefined };
 type Phase = "idle" | "outgoing" | "incoming" | "connecting" | "active";
+
+const MINI_W = "min(36vw, 180px)";
 
 const Ctx = createContext<{ startCall: (p: Profile, video: boolean) => void; busy: boolean }>({ startCall: () => {}, busy: false });
 export const useCalls = () => useContext(Ctx);
@@ -33,7 +38,14 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const [elapsed, setElapsed] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const [minimized, setMinimized] = useState(false);
+  const [miniPos, setMiniPos] = useState({ x: 99999, y: 72 });
 
+  const miniDrag = useRef<{ dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null);
+  const resend = useRef<number | undefined>(undefined);
+  const starting = useRef(false);
+  const accepting = useRef(false);
+  const ended = useRef(new Set<string>());
   const pc = useRef<RTCPeerConnection | null>(null);
   const local = useRef<MediaStream | null>(null);
   const remote = useRef<MediaStream | null>(null);
@@ -85,6 +97,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const cleanup = useCallback(() => {
     stopRing();
     clearTimeout(timeout.current);
+    clearInterval(resend.current);
+    accepting.current = false;
+    if (infoRef.current) ended.current.add(infoRef.current.id);
     local.current?.getTracks().forEach((t) => t.stop());
     pc.current?.close();
     pc.current = null;
@@ -94,7 +109,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     startedAt.current = null;
     if (remoteVid.current) remoteVid.current.srcObject = null;
     if (remoteAudio.current) remoteAudio.current.srcObject = null;
-    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0);
+    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false);
     setI(null);
     setP("idle");
   }, []);
@@ -121,7 +136,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   }, [cleanup, send]);
 
   const buildPc = async (i: Info) => {
-    const p = new RTCPeerConnection({ iceServers: await loadIceServers(), iceCandidatePoolSize: 4 });
+    const iceServers = await loadIceServers();
+    // The call may have ended while the relay list was loading
+    if (infoRef.current?.id !== i.id) return null;
+    const p = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
     remote.current = new MediaStream();
     p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
     p.ontrack = (e) => {
@@ -134,16 +152,22 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       }
     };
     let dropTimer: number | undefined;
+    let restarted = false;
     const onState = () => {
       const c = p.connectionState, ice = p.iceConnectionState;
       if (c === "connected" || ice === "connected" || ice === "completed") {
         clearTimeout(dropTimer);
         goActive();
       } else if (c === "failed" || ice === "failed") {
-        // Try once to find a new route before giving up
-        try { p.restartIce(); } catch {}
+        // Try once to find a new route before giving up. Only the caller re-offers, so restarts can't cross.
+        if (i.role === "caller" && !restarted) {
+          restarted = true;
+          void p.createOffer({ iceRestart: true })
+            .then(async (o) => { await p.setLocalDescription(o); send(i.peer.id, { kind: "offer", callId: i.id, restart: true, sdp: o }); })
+            .catch(() => {});
+        }
         clearTimeout(dropTimer);
-        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 10000);
+        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 20000);
       } else if (c === "disconnected" || ice === "disconnected") {
         clearTimeout(dropTimer);
         dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 15000);
@@ -183,49 +207,90 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const beginConnecting = () => {
     stopRing();
     clearTimeout(timeout.current);
+    clearInterval(resend.current);
+    // Media can start flowing before this runs; don't drop back to "Connecting…" and its hang-up timer
+    if (startedAt.current) return;
     setP("connecting");
     timeout.current = window.setTimeout(() => finish(true), 45000);
   };
 
   const startCall = useCallback(async (peer: Profile, video: boolean) => {
-    if (phaseRef.current !== "idle") return;
+    if (phaseRef.current !== "idle" || starting.current) return;
+    starting.current = true;
+    let stream: MediaStream;
     try {
-      local.current = await getMedia(video);
+      stream = await getMedia(video);
     } catch {
+      starting.current = false;
       alert("Camera/microphone permission is needed to call.");
       return;
     }
     const { data } = await supabase.from("calls").insert({ caller_id: me.id, receiver_id: peer.id, type: video ? "video" : "voice" }).select().single();
-    const i: Info = { id: data?.id ?? crypto.randomUUID(), peer, video, role: "caller" };
+    starting.current = false;
+    // A call reached us while we were getting ready: it came first, so ours never starts
+    if (infoRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      if (data) supabase.from("calls").update({ status: "missed", ended_at: new Date().toISOString() }).eq("id", data.id).then();
+      const cur = infoRef.current;
+      // We were calling this same person, so connect straight away unless it would turn the camera on unasked
+      if (cur.role === "callee" && cur.peer.id === peer.id && (video || !cur.video)) void accept();
+      return;
+    }
+    const i: Info = { id: data?.id ?? crypto.randomUUID(), peer, video, role: "caller", ts: data?.started_at ?? new Date().toISOString() };
+    local.current = stream;
     setI(i);
     setP("outgoing");
     setCamOff(false);
-    const p = await buildPc(i);
-    const offer = await p.createOffer();
-    await p.setLocalDescription(offer);
-    send(peer.id, { kind: "offer", callId: i.id, video, sdp: offer });
-    startRing(true);
-    timeout.current = window.setTimeout(() => finish(true), 35000);
+    try {
+      const p = await buildPc(i);
+      if (!p) return;
+      const offer = await p.createOffer();
+      await p.setLocalDescription(offer);
+      if (pc.current !== p) return;
+      // Signals are fire-and-forget, so keep offering until answered. A phone waking up still gets the call.
+      const sendOffer = () => send(peer.id, { kind: "offer", callId: i.id, video, ts: i.ts!, sdp: p.localDescription?.toJSON() ?? offer });
+      sendOffer();
+      resend.current = window.setInterval(sendOffer, 2500);
+      startRing(true);
+      timeout.current = window.setTimeout(() => finish(true), 35000);
+    } catch {
+      finish(true);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.id, send, finish]);
 
   const accept = async () => {
     const i = infoRef.current;
-    if (!i?.offer) return;
+    if (!i?.offer || accepting.current) return;
+    accepting.current = true;
     stopRing();
+    clearTimeout(timeout.current);
+    let stream: MediaStream;
     try {
-      local.current = await getMedia(i.video);
+      stream = await getMedia(i.video);
     } catch {
       alert("Camera/microphone permission is needed.");
       return decline();
     }
-    const p = await buildPc(i);
-    await p.setRemoteDescription(i.offer);
-    await flushIce();
-    const ans = await p.createAnswer();
-    await p.setLocalDescription(ans);
-    send(i.peer.id, { kind: "answer", callId: i.id, sdp: ans });
-    beginConnecting();
+    // The caller may have hung up during the permission prompt
+    if (infoRef.current?.id !== i.id) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    local.current = stream;
+    try {
+      const p = await buildPc(i);
+      if (!p) return;
+      await p.setRemoteDescription(i.offer);
+      await flushIce();
+      const ans = await p.createAnswer();
+      await p.setLocalDescription(ans);
+      if (infoRef.current?.id !== i.id) return;
+      send(i.peer.id, { kind: "answer", callId: i.id, sdp: ans });
+      beginConnecting();
+    } catch {
+      finish(true);
+    }
   };
 
   const decline = () => {
@@ -240,19 +305,51 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     ch.on("broadcast", { event: "signal" }, async ({ payload }) => {
       const s = payload as Sig;
       const cur = infoRef.current;
+      // A repeated offer still in flight must not ring a call that already ended
+      if (ended.current.has(s.callId)) return;
       if (s.kind === "offer") {
-        if (cur) return send(s.from, { kind: "busy", callId: s.callId });
+        if (cur?.id === s.callId) {
+          const conn = pc.current;
+          if (s.restart && conn) {
+            await conn.setRemoteDescription(s.sdp!);
+            const ans = await conn.createAnswer();
+            await conn.setLocalDescription(ans);
+            send(s.from, { kind: "answer", callId: s.callId, sdp: ans });
+          } else if (conn?.localDescription?.type === "answer") {
+            // Caller is still offering, so our answer got lost
+            send(s.from, { kind: "answer", callId: s.callId, sdp: conn.localDescription.toJSON() });
+          }
+          return;
+        }
+        if (s.restart) return;
+        let autoAccept = false;
+        if (cur) {
+          // Each called the other. Keep the first call; the other side's call yields to it.
+          const crossed = cur.peer.id === s.from && cur.role === "caller" && phaseRef.current === "outgoing";
+          if (!crossed) return send(s.from, { kind: "busy", callId: s.callId });
+          if (firstCallWins(cur, { id: s.callId, ts: s.ts })) return;
+          // Both already chose to talk, so connect straight away unless it would turn the camera on unasked
+          autoAccept = cur.video || !s.video;
+          supabase.from("calls").update({ status: "missed", ended_at: new Date().toISOString() }).eq("id", cur.id).then();
+          cleanup();
+        }
         const peer = profilesRef.current.find((p) => p.id === s.from);
         if (!peer) return;
         pendingIce.current = earlyIce.current.get(s.callId) ?? [];
         earlyIce.current.clear();
         setI({ id: s.callId, peer, video: !!s.video, role: "callee", offer: s.sdp });
         setP("incoming");
+        if (autoAccept) {
+          void accept();
+          return;
+        }
         startRing(false);
         notify(peer.display_name, `Incoming ${s.video ? "video" : "voice"} call`);
+        // Stop ringing even if the caller's cancel never arrives
+        timeout.current = window.setTimeout(cleanup, 40000);
         return;
       }
-      if (s.kind === "ice" && !cur && s.cand) {
+      if (s.kind === "ice" && (!cur || cur.id !== s.callId) && s.cand) {
         const list = earlyIce.current.get(s.callId) ?? [];
         list.push(s.cand);
         earlyIce.current.set(s.callId, list);
@@ -340,7 +437,27 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     } catch {}
   };
 
+  const onMiniDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!minimized || (e.target as Element).closest("button")) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    miniDrag.current = { dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onMiniMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = miniDrag.current;
+    if (!d) return;
+    if (Math.hypot(e.clientX - d.x0, e.clientY - d.y0) > 5) d.moved = true;
+    if (d.moved) setMiniPos({ x: e.clientX - d.dx, y: e.clientY - d.dy });
+  };
+  const onMiniUp = () => {
+    const d = miniDrag.current;
+    miniDrag.current = null;
+    if (d && !d.moved) setMinimized(false);
+  };
+
   const showVideo = info?.video && phase !== "incoming";
+  const statusText = phase === "incoming" ? `Incoming ${info?.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : phase === "connecting" ? "Connecting…" : fmtDur(elapsed);
+  const miniH = info?.video ? `calc(${MINI_W} * 1.6)` : "9.5rem";
   // Stable value so chat screens don't re-render on every call-timer tick.
   const busy = phase !== "idle";
   const ctxValue = useMemo(() => ({ startCall, busy }), [startCall, busy]);
@@ -349,39 +466,76 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     <Ctx.Provider value={ctxValue}>
       {children}
       {info && phase !== "idle" && (
-        <div className="fixed inset-0 z-50 flex flex-col bg-call-bg text-call-fg">
+        <div
+          onPointerDown={onMiniDown}
+          onPointerMove={onMiniMove}
+          onPointerUp={onMiniUp}
+          onPointerCancel={() => { miniDrag.current = null; }}
+          style={minimized ? {
+            width: MINI_W,
+            height: miniH,
+            left: `clamp(8px, ${miniPos.x}px, calc(100vw - ${MINI_W} - 8px))`,
+            top: `clamp(8px, ${miniPos.y}px, calc(100dvh - ${miniH} - 8px))`,
+          } : undefined}
+          className={cn("fixed z-50 flex flex-col bg-call-bg text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl shadow-2xl" : "inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:aspect-[9/19.5] sm:h-[min(92dvh,820px)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:overflow-hidden sm:rounded-3xl sm:shadow-2xl")}
+        >
           {!info.video && <audio ref={remoteAudio} autoPlay />}
           <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
           {showVideo && (
-            <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg sm:h-48 sm:w-36", camOff && "opacity-0", facing.current === "user" && "-scale-x-100")} />
+            <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
           )}
-          <div className={cn("relative z-10 flex flex-1 flex-col items-center pt-24", showVideo && hasRemoteVideo && "justify-start")}>
-            {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
-            <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
-            <p className="mt-1 text-sm opacity-75 drop-shadow">
-              {phase === "incoming" ? `Incoming ${info.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : phase === "connecting" ? "Connecting…" : fmtDur(elapsed)}
-            </p>
-            {playbackBlocked && <button onClick={enablePlayback} className="mt-4 rounded-full bg-call-fg/15 px-4 py-2 text-sm">Tap to enable audio</button>}
-          </div>
-          <div className="relative z-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
-            {phase === "incoming" ? (
-              <div className="flex justify-center gap-16 sm:gap-20">
-                <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
-                <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
+          {minimized ? (
+            <>
+              <div className="pointer-events-none relative z-10 flex min-h-0 flex-1 flex-col items-center justify-end px-2 pb-1 text-center">
+                {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={44} />}
+                <p className="mt-1 w-full truncate text-xs font-medium drop-shadow">{info.peer.display_name}</p>
+                <p className="text-[11px] opacity-75 drop-shadow">{statusText}</p>
               </div>
-            ) : (
-              <div className="flex flex-wrap justify-center gap-x-4 gap-y-3 px-3">
-                <CallBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</CallBtn>
-                {info.video && <CallBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</CallBtn>}
-                {info.video && <CallBtn label="Switch" onClick={switchCam}><RefreshCcw /></CallBtn>}
-                <CallBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</CallBtn>
-                <CallBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></CallBtn>
+              {playbackBlocked && <button onClick={enablePlayback} className="relative z-10 mx-2 mb-1 rounded-full bg-call-fg/15 py-1 text-[11px]">Tap to enable audio</button>}
+              <div className="relative z-10 flex justify-center gap-2 pb-2">
+                <MiniBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} className={muted ? "bg-call-fg text-call-bg" : "bg-call-fg/15"}>{muted ? <MicOff /> : <Mic />}</MiniBtn>
+                <MiniBtn label="Full screen" onClick={() => setMinimized(false)} className="bg-call-fg/15"><Maximize2 /></MiniBtn>
+                <MiniBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></MiniBtn>
               </div>
-            )}
-          </div>
+            </>
+          ) : (
+            <>
+              <div className={cn("relative z-10 flex flex-1 flex-col items-center pt-24", showVideo && hasRemoteVideo && "justify-start")}>
+                {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
+                <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
+                <p className="mt-1 text-sm opacity-75 drop-shadow">{statusText}</p>
+                {playbackBlocked && <button onClick={enablePlayback} className="mt-4 rounded-full bg-call-fg/15 px-4 py-2 text-sm">Tap to enable audio</button>}
+              </div>
+              <div className="relative z-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
+                {phase === "incoming" ? (
+                  <div className="flex justify-center gap-16 sm:gap-20">
+                    <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
+                    <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
+                  </div>
+                ) : (
+                  <div className="flex flex-wrap justify-center gap-x-4 gap-y-3 px-3">
+                    <CallBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</CallBtn>
+                    {info.video && <CallBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</CallBtn>}
+                    {info.video && <CallBtn label="Switch" onClick={switchCam}><RefreshCcw /></CallBtn>}
+                    <CallBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</CallBtn>
+                    <CallBtn label="Minimize" onClick={() => setMinimized(true)}><Minimize2 /></CallBtn>
+                    <CallBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></CallBtn>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       )}
     </Ctx.Provider>
+  );
+}
+
+function MiniBtn({ children, label, onClick, className }: { children: ReactNode; label: string; onClick: () => void; className: string }) {
+  return (
+    <button onClick={onClick} aria-label={label} className={cn("flex h-8 w-8 items-center justify-center rounded-full [&_svg]:h-4 [&_svg]:w-4", className)}>
+      {children}
+    </button>
   );
 }
 
