@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
+import { toast } from "sonner";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
 import { loadIceServers } from "@/lib/ice";
 import { startRing, stopRing, notify } from "@/lib/tones";
@@ -12,7 +13,7 @@ import { Avatar } from "./Avatar";
 import { cn } from "@/lib/utils";
 
 type Sig = {
-  kind: "offer" | "answer" | "ice" | "end" | "decline" | "busy" | "cancel";
+  kind: "offer" | "reoffer" | "answer" | "ice" | "end" | "decline" | "busy" | "cancel";
   callId: string;
   from: string;
   video?: boolean;
@@ -248,9 +249,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       await p.setLocalDescription(offer);
       if (pc.current !== p) return;
       // Signals are fire-and-forget, so keep offering until answered. A phone waking up still gets the call.
-      const sendOffer = () => send(peer.id, { kind: "offer", callId: i.id, video, ts: i.ts!, sdp: p.localDescription?.toJSON() ?? offer });
-      sendOffer();
-      resend.current = window.setInterval(sendOffer, 2500);
+      // Repeats use their own kind: an app copy from before repeats existed answers a second "offer" with "busy".
+      const sendOffer = (kind: "offer" | "reoffer") => send(peer.id, { kind, callId: i.id, video, ts: i.ts!, sdp: p.localDescription?.toJSON() ?? offer });
+      sendOffer("offer");
+      resend.current = window.setInterval(() => sendOffer("reoffer"), 2500);
       startRing(true);
       timeout.current = window.setTimeout(() => finish(true), 35000);
     } catch {
@@ -301,13 +303,12 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   // Incoming signalling
   useEffect(() => {
-    const ch = supabase.channel(`call:${me.id}`);
-    ch.on("broadcast", { event: "signal" }, async ({ payload }) => {
+    const onSignal = async ({ payload }: { payload: unknown }) => {
       const s = payload as Sig;
       const cur = infoRef.current;
       // A repeated offer still in flight must not ring a call that already ended
       if (ended.current.has(s.callId)) return;
-      if (s.kind === "offer") {
+      if (s.kind === "offer" || s.kind === "reoffer") {
         if (cur?.id === s.callId) {
           const conn = pc.current;
           if (s.restart && conn) {
@@ -368,7 +369,13 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
           else pendingIce.current.push(s.cand!);
           break;
         case "decline":
+          toast(`${cur.peer.display_name} declined the call`);
+          finish(false);
+          break;
         case "busy":
+          toast(`${cur.peer.display_name} is busy on another call`);
+          finish(false);
+          break;
         case "end":
           finish(false);
           break;
@@ -377,9 +384,38 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
           cleanup();
           break;
       }
-    });
-    ch.subscribe();
-    return () => { supabase.removeChannel(ch); };
+    };
+    // Phones drop this connection when the app is in the background. Rejoin, or calls never reach us.
+    let ch: RealtimeChannel | null = null;
+    let stopped = false;
+    let retry: number | undefined;
+    const listen = () => {
+      const c = supabase.channel(`call:${me.id}`);
+      ch = c;
+      c.on("broadcast", { event: "signal" }, onSignal);
+      c.subscribe((st) => {
+        if (ch === c && st !== "SUBSCRIBED") rejoin(c, 2000);
+      });
+    };
+    const rejoin = async (c: RealtimeChannel, delay: number) => {
+      ch = null;
+      await supabase.removeChannel(c).catch(() => {});
+      clearTimeout(retry);
+      retry = window.setTimeout(() => { if (!stopped) listen(); }, delay);
+    };
+    const wake = () => {
+      if (document.visibilityState === "visible" && ch && ch.state !== "joined" && ch.state !== "joining") rejoin(ch, 0);
+    };
+    listen();
+    document.addEventListener("visibilitychange", wake);
+    window.addEventListener("online", wake);
+    return () => {
+      stopped = true;
+      clearTimeout(retry);
+      document.removeEventListener("visibilitychange", wake);
+      window.removeEventListener("online", wake);
+      if (ch) supabase.removeChannel(ch);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.id]);
 
@@ -477,53 +513,50 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
             left: `clamp(8px, ${miniPos.x}px, calc(100vw - ${MINI_W} - 8px))`,
             top: `clamp(8px, ${miniPos.y}px, calc(100dvh - ${miniH} - 8px))`,
           } : undefined}
-          className={cn("fixed z-50 flex flex-col bg-call-bg text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl shadow-2xl" : "inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:aspect-[9/19.5] sm:h-[min(92dvh,820px)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:overflow-hidden sm:rounded-3xl sm:shadow-2xl")}
+          className={cn("fixed z-50 flex flex-col bg-call-bg text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl shadow-2xl" : "inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(92dvh,820px)] sm:w-[max(300px,calc((min(92dvh,820px)-68px)*9/19.5))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:overflow-hidden sm:rounded-3xl sm:shadow-2xl")}
         >
           {!info.video && <audio ref={remoteAudio} autoPlay />}
-          <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
-          {showVideo && (
-            <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
-          )}
-          {minimized ? (
-            <>
-              <div className="pointer-events-none relative z-10 flex min-h-0 flex-1 flex-col items-center justify-end px-2 pb-1 text-center">
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
+            {showVideo && (
+              <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
+            )}
+            {minimized ? (
+              <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-1 text-center">
                 {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={44} />}
                 <p className="mt-1 w-full truncate text-xs font-medium drop-shadow">{info.peer.display_name}</p>
                 <p className="text-[11px] opacity-75 drop-shadow">{statusText}</p>
               </div>
-              {playbackBlocked && <button onClick={enablePlayback} className="relative z-10 mx-2 mb-1 rounded-full bg-call-fg/15 py-1 text-[11px]">Tap to enable audio</button>}
-              <div className="relative z-10 flex justify-center gap-2 pb-2">
-                <MiniBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} className={muted ? "bg-call-fg text-call-bg" : "bg-call-fg/15"}>{muted ? <MicOff /> : <Mic />}</MiniBtn>
-                <MiniBtn label="Full screen" onClick={() => setMinimized(false)} className="bg-call-fg/15"><Maximize2 /></MiniBtn>
-                <MiniBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></MiniBtn>
-              </div>
-            </>
-          ) : (
-            <>
-              <div className={cn("relative z-10 flex flex-1 flex-col items-center pt-24", showVideo && hasRemoteVideo && "justify-start")}>
+            ) : (
+              <div className="relative z-10 flex h-full flex-col items-center pt-24">
                 {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
                 <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
                 <p className="mt-1 text-sm opacity-75 drop-shadow">{statusText}</p>
-                {playbackBlocked && <button onClick={enablePlayback} className="mt-4 rounded-full bg-call-fg/15 px-4 py-2 text-sm">Tap to enable audio</button>}
               </div>
-              <div className="relative z-10 pb-[max(2rem,env(safe-area-inset-bottom))]">
-                {phase === "incoming" ? (
-                  <div className="flex justify-center gap-16 sm:gap-20">
-                    <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
-                    <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap justify-center gap-x-4 gap-y-3 px-3">
-                    <CallBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</CallBtn>
-                    {info.video && <CallBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</CallBtn>}
-                    {info.video && <CallBtn label="Switch" onClick={switchCam}><RefreshCcw /></CallBtn>}
-                    <CallBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</CallBtn>
-                    <CallBtn label="Minimize" onClick={() => setMinimized(true)}><Minimize2 /></CallBtn>
-                    <CallBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></CallBtn>
-                  </div>
-                )}
-              </div>
-            </>
+            )}
+          </div>
+          {/* Buttons sit in their own bar under the picture, never on top of it */}
+          {playbackBlocked && <button onClick={enablePlayback} className={cn("mx-auto rounded-full bg-call-fg/15", minimized ? "mt-1 px-2 py-1 text-[11px]" : "mt-2 px-4 py-2 text-sm")}>Tap to enable audio</button>}
+          {minimized ? (
+            <div className="flex justify-center gap-2 py-2">
+              <BarBtn small label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
+              <BarBtn small label="Full screen" onClick={() => setMinimized(false)}><Maximize2 /></BarBtn>
+              <BarBtn small label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
+            </div>
+          ) : phase === "incoming" ? (
+            <div className="flex justify-center gap-16 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 sm:gap-20">
+              <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
+              <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
+            </div>
+          ) : (
+            <div className="flex justify-center gap-1.5 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+              <BarBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
+              {info.video && <BarBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</BarBtn>}
+              {info.video && <BarBtn label="Switch camera" onClick={switchCam}><RefreshCcw /></BarBtn>}
+              <BarBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</BarBtn>
+              <BarBtn label="Minimize" onClick={() => setMinimized(true)}><Minimize2 /></BarBtn>
+              <BarBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
+            </div>
           )}
         </div>
       )}
@@ -531,9 +564,14 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   );
 }
 
-function MiniBtn({ children, label, onClick, className }: { children: ReactNode; label: string; onClick: () => void; className: string }) {
+function BarBtn({ children, label, onClick, className, active, small }: { children: ReactNode; label: string; onClick: () => void; className?: string; active?: boolean; small?: boolean }) {
   return (
-    <button onClick={onClick} aria-label={label} className={cn("flex h-8 w-8 items-center justify-center rounded-full [&_svg]:h-4 [&_svg]:w-4", className)}>
+    <button
+      onClick={onClick}
+      aria-label={label}
+      title={label}
+      className={cn("flex shrink-0 items-center justify-center rounded-full", small ? "h-8 w-8 [&_svg]:h-4 [&_svg]:w-4" : "h-11 w-11 [&_svg]:h-5 [&_svg]:w-5", className ?? (active ? "bg-call-fg text-call-bg" : "bg-call-fg/15"))}
+    >
       {children}
     </button>
   );
