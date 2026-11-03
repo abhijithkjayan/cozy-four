@@ -45,6 +45,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [maximized, setMaximized] = useState(false);
+  const [controlsShown, setControlsShown] = useState(true);
+  const controlsTimer = useRef<number | undefined>(undefined);
   const callRoot = useRef<HTMLDivElement>(null);
   const [miniPos, setMiniPos] = useState({ x: 99999, y: 72 });
 
@@ -499,6 +501,19 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     return () => document.removeEventListener("fullscreenchange", onChange);
   }, []);
 
+  // Once video is playing, buttons fade out when idle; moving the mouse or tapping brings them back
+  const fadeControls = phase === "active" && hasRemoteVideo && !minimized;
+  const wakeControls = () => {
+    setControlsShown(true);
+    clearTimeout(controlsTimer.current);
+    if (fadeControls) controlsTimer.current = window.setTimeout(() => setControlsShown(false), 4000);
+  };
+  useEffect(() => {
+    wakeControls();
+    return () => clearTimeout(controlsTimer.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fadeControls]);
+
   const toggleMaximized = () => {
     if (maximized) {
       leaveFullscreen();
@@ -541,8 +556,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       {info && phase !== "idle" && (
         <div
           ref={callRoot}
-          onPointerDown={onMiniDown}
-          onPointerMove={onMiniMove}
+          onPointerDown={(e) => { onMiniDown(e); wakeControls(); }}
+          onPointerMove={(e) => { onMiniMove(e); wakeControls(); }}
           onPointerUp={onMiniUp}
           onPointerCancel={() => { miniDrag.current = null; }}
           style={minimized ? {
@@ -551,16 +566,16 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
             left: `clamp(8px, ${miniPos.x}px, calc(100vw - ${MINI_W} - 8px))`,
             top: `clamp(8px, ${miniPos.y}px, calc(100dvh - ${miniH} - 8px))`,
           } : undefined}
-          className={cn("fixed z-50 flex flex-col text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl bg-call-bg shadow-2xl" : maximized ? "inset-0 bg-black" : "inset-0 bg-call-bg sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(92dvh,820px)] sm:w-[max(300px,calc((min(92dvh,820px)-80px)*9/19.5))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:bg-transparent")}
+          className={cn("fixed z-50 flex flex-col text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl bg-call-bg shadow-2xl" : maximized ? "inset-0 bg-black" : "inset-0 bg-call-bg sm:inset-auto sm:left-1/2 sm:top-1/2 sm:aspect-[9/19.5] sm:h-[min(92dvh,820px)] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:overflow-hidden sm:rounded-3xl sm:shadow-2xl")}
         >
           {!info.video && <audio ref={remoteAudio} autoPlay />}
-          <div className={cn("relative min-h-0 flex-1 overflow-hidden", maximized ? "bg-black" : "bg-call-bg", !minimized && !maximized && "sm:rounded-3xl sm:shadow-2xl")}>
+          <div className="relative min-h-0 flex-1 overflow-hidden">
             <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full", maximized ? "object-contain" : "object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
             {showVideo && (
               <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 rounded-xl shadow-lg", maximized ? "h-auto w-28 sm:w-44" : "h-40 w-28 object-cover", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
             )}
             {minimized ? (
-              <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-1 text-center">
+              <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-10 text-center">
                 {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={44} />}
                 <p className="mt-1 w-full truncate text-xs font-medium drop-shadow">{info.peer.display_name}</p>
                 <p className="text-[11px] opacity-75 drop-shadow">{statusText}</p>
@@ -580,28 +595,27 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
               )
             )}
           </div>
-          {/* Buttons sit in their own bar under the picture, never on top of it */}
-          {playbackBlocked && <button onClick={enablePlayback} className={cn("mx-auto rounded-full", minimized ? "mt-1 bg-call-fg/15 px-2 py-1 text-[11px]" : "mt-2 bg-primary px-4 py-2 text-sm text-primary-foreground")}>Tap to enable audio</button>}
+          {playbackBlocked && <button onClick={enablePlayback} className={cn("absolute left-1/2 z-20 w-max -translate-x-1/2 rounded-full bg-black/40 text-white backdrop-blur-sm", minimized ? "bottom-9 px-2 py-0.5 text-[10px]" : "bottom-16 px-3 py-1.5 text-xs")}>Tap to enable audio</button>}
           {minimized ? (
-            <div className="flex justify-center gap-2 py-2">
+            <div className="absolute bottom-1.5 left-1/2 z-20 flex w-max -translate-x-1/2 gap-1.5">
               <BarBtn small label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
-              <BarBtn small label="Full screen" onClick={() => setMinimized(false)}><Maximize2 /></BarBtn>
-              <BarBtn small label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
+              <BarBtn small label="Expand" onClick={() => setMinimized(false)}><Maximize2 /></BarBtn>
+              <BarBtn small label="End" onClick={() => finish(true)} className="bg-destructive/70 text-white"><PhoneOff /></BarBtn>
             </div>
           ) : phase === "incoming" ? (
-            <div className="flex justify-center gap-16 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 sm:mt-3 sm:gap-20 sm:rounded-3xl sm:bg-call-bg sm:pb-4 sm:pt-4 sm:shadow-2xl">
+            <div className="flex justify-center gap-16 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 sm:gap-20">
               <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
               <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
             </div>
           ) : (
-            <div className={cn("flex justify-center gap-1 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:mt-3 sm:w-max sm:gap-1.5 sm:self-center sm:rounded-full sm:py-2.5 sm:shadow-2xl", maximized ? "sm:mb-3 sm:bg-call-bg" : "sm:bg-call-bg")}>
+            <div style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }} className={cn("absolute left-1/2 z-20 flex w-max -translate-x-1/2 gap-1.5 transition-opacity duration-300", !controlsShown && "pointer-events-none opacity-0")}>
               <BarBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
               {info.video && <BarBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</BarBtn>}
               {info.video && <BarBtn label="Switch camera" onClick={switchCam}><RefreshCcw /></BarBtn>}
               <BarBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</BarBtn>
-              <BarBtn label={maximized ? "Exit full screen" : "Full screen"} onClick={toggleMaximized} active={maximized}>{maximized ? <Shrink /> : <Expand />}</BarBtn>
+              {info.video && <BarBtn label={maximized ? "Exit full screen" : "Full screen"} onClick={toggleMaximized} active={maximized}>{maximized ? <Shrink /> : <Expand />}</BarBtn>}
               <BarBtn label="Minimize" onClick={() => { leaveFullscreen(); setMaximized(false); setMinimized(true); }}><Minimize2 /></BarBtn>
-              <BarBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
+              <BarBtn label="End" onClick={() => finish(true)} className="bg-destructive/70 text-white"><PhoneOff /></BarBtn>
             </div>
           )}
         </div>
@@ -616,7 +630,7 @@ function BarBtn({ children, label, onClick, className, active, small }: { childr
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={cn("flex shrink-0 items-center justify-center rounded-full", small ? "h-8 w-8 [&_svg]:h-4 [&_svg]:w-4" : "h-10 w-10 sm:h-11 sm:w-11 [&_svg]:h-5 [&_svg]:w-5", className ?? (active ? "bg-call-fg text-call-bg" : "bg-call-fg/15"))}
+      className={cn("flex shrink-0 items-center justify-center rounded-full backdrop-blur-sm transition-colors", small ? "h-7 w-7 [&_svg]:h-3.5 [&_svg]:w-3.5" : "h-9 w-9 [&_svg]:h-4 [&_svg]:w-4", className ?? (active ? "bg-white/70 text-black" : "bg-black/25 text-white hover:bg-black/40"))}
     >
       {children}
     </button>
