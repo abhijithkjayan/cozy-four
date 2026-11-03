@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import type { RealtimeChannel } from "@supabase/supabase-js";
-import { Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, RefreshCcw, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
+import { Expand, Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, RefreshCcw, Shrink, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
 import { loadIceServers } from "@/lib/ice";
@@ -27,6 +27,10 @@ type Phase = "idle" | "outgoing" | "incoming" | "connecting" | "active";
 
 const MINI_W = "min(36vw, 180px)";
 
+const leaveFullscreen = () => {
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+};
+
 const Ctx = createContext<{ startCall: (p: Profile, video: boolean) => void; busy: boolean }>({ startCall: () => {}, busy: false });
 export const useCalls = () => useContext(Ctx);
 
@@ -40,6 +44,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
   const [minimized, setMinimized] = useState(false);
+  const [maximized, setMaximized] = useState(false);
+  const callRoot = useRef<HTMLDivElement>(null);
   const [miniPos, setMiniPos] = useState({ x: 99999, y: 72 });
 
   const miniDrag = useRef<{ dx: number; dy: number; x0: number; y0: number; moved: boolean } | null>(null);
@@ -108,9 +114,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     remote.current = null;
     pendingIce.current = [];
     startedAt.current = null;
-    if (remoteVid.current) remoteVid.current.srcObject = null;
-    if (remoteAudio.current) remoteAudio.current.srcObject = null;
-    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false);
+    if (remoteVid.current) { remoteVid.current.srcObject = null; remoteVid.current.muted = false; }
+    if (remoteAudio.current) { remoteAudio.current.srcObject = null; remoteAudio.current.muted = false; }
+    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false); setMaximized(false);
+    leaveFullscreen();
     setI(null);
     setP("idle");
   }, []);
@@ -136,6 +143,19 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanup, send]);
 
+  const attachRemote = (player: HTMLMediaElement | null) => {
+    if (!player || !remote.current) return;
+    // Setting srcObject again, even to the same stream, restarts loading and aborts the pending play()
+    if (player.srcObject !== remote.current) player.srcObject = remote.current;
+    void player.play().then(() => setPlaybackBlocked(player.muted)).catch((e: DOMException) => {
+      if (e.name !== "NotAllowedError") return;
+      // Browser refused sound: start muted so the picture still shows, and offer to unmute
+      setPlaybackBlocked(true);
+      player.muted = true;
+      void player.play().catch(() => {});
+    });
+  };
+
   const buildPc = async (i: Info) => {
     const iceServers = await loadIceServers();
     // The call may have ended while the relay list was loading
@@ -146,11 +166,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     p.ontrack = (e) => {
       if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
       if (e.track.kind === "video") setHasRemoteVideo(true);
-      const player = i.video ? remoteVid.current : remoteAudio.current;
-      if (player) {
-        player.srcObject = remote.current;
-        void player.play().then(() => setPlaybackBlocked(false)).catch(() => setPlaybackBlocked(true));
-      }
+      attachRemote(i.video ? remoteVid.current : remoteAudio.current);
     };
     let dropTimer: number | undefined;
     let restarted = false;
@@ -311,6 +327,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       if (s.kind === "offer" || s.kind === "reoffer") {
         if (cur?.id === s.callId) {
           const conn = pc.current;
+          // A repeat carries every route found so far, so answering it survives lost "ice" messages
+          if (!conn && s.sdp && cur.role === "callee") cur.offer = s.sdp;
           if (s.restart && conn) {
             await conn.setRemoteDescription(s.sdp!);
             const ans = await conn.createAnswer();
@@ -421,9 +439,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   useEffect(() => {
     if (phase === "idle") return;
-    if (localVid.current && local.current) localVid.current.srcObject = local.current;
-    if (info?.video && remoteVid.current && remote.current) remoteVid.current.srcObject = remote.current;
-    if (info && !info.video && remoteAudio.current && remote.current) remoteAudio.current.srcObject = remote.current;
+    if (localVid.current && local.current && localVid.current.srcObject !== local.current) localVid.current.srcObject = local.current;
+    if (info && remote.current?.getTracks().length) attachRemote(info.video ? remoteVid.current : remoteAudio.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, hasRemoteVideo, info]);
 
   useEffect(() => {
@@ -449,6 +467,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   const enablePlayback = () => {
     const player = info?.video ? remoteVid.current : remoteAudio.current;
+    if (player) player.muted = false;
     void player?.play().then(() => setPlaybackBlocked(false)).catch(() => setPlaybackBlocked(true));
   };
 
@@ -471,6 +490,24 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       local.current?.addTrack(nt);
       if (localVid.current) localVid.current.srcObject = local.current;
     } catch {}
+  };
+
+  // Esc or the browser's own control can leave full screen too
+  useEffect(() => {
+    const onChange = () => { if (!document.fullscreenElement) setMaximized(false); };
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
+  const toggleMaximized = () => {
+    if (maximized) {
+      leaveFullscreen();
+      setMaximized(false);
+      return;
+    }
+    setMaximized(true);
+    // iPhones have no fullscreen for pages; there the call still fills the whole screen
+    void callRoot.current?.requestFullscreen?.().catch(() => {});
   };
 
   const onMiniDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -503,6 +540,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       {children}
       {info && phase !== "idle" && (
         <div
+          ref={callRoot}
           onPointerDown={onMiniDown}
           onPointerMove={onMiniMove}
           onPointerUp={onMiniUp}
@@ -513,13 +551,13 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
             left: `clamp(8px, ${miniPos.x}px, calc(100vw - ${MINI_W} - 8px))`,
             top: `clamp(8px, ${miniPos.y}px, calc(100dvh - ${miniH} - 8px))`,
           } : undefined}
-          className={cn("fixed z-50 flex flex-col bg-call-bg text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl shadow-2xl" : "inset-0 sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(92dvh,820px)] sm:w-[max(300px,calc((min(92dvh,820px)-68px)*9/19.5))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:overflow-hidden sm:rounded-3xl sm:shadow-2xl")}
+          className={cn("fixed z-50 flex flex-col text-call-fg", minimized ? "cursor-grab touch-none select-none overflow-hidden rounded-2xl bg-call-bg shadow-2xl" : maximized ? "inset-0 bg-black" : "inset-0 bg-call-bg sm:inset-auto sm:left-1/2 sm:top-1/2 sm:h-[min(92dvh,820px)] sm:w-[max(300px,calc((min(92dvh,820px)-80px)*9/19.5))] sm:-translate-x-1/2 sm:-translate-y-1/2 sm:bg-transparent")}
         >
           {!info.video && <audio ref={remoteAudio} autoPlay />}
-          <div className="relative min-h-0 flex-1 overflow-hidden">
-            <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
+          <div className={cn("relative min-h-0 flex-1 overflow-hidden", maximized ? "bg-black" : "bg-call-bg", !minimized && !maximized && "sm:rounded-3xl sm:shadow-2xl")}>
+            <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full", maximized ? "object-contain" : "object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
             {showVideo && (
-              <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 h-40 w-28 rounded-xl object-cover shadow-lg", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
+              <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 rounded-xl shadow-lg", maximized ? "h-auto w-28 sm:w-44" : "h-40 w-28 object-cover", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
             )}
             {minimized ? (
               <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-1 text-center">
@@ -528,15 +566,22 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
                 <p className="text-[11px] opacity-75 drop-shadow">{statusText}</p>
               </div>
             ) : (
-              <div className="relative z-10 flex h-full flex-col items-center pt-24">
-                {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={112} />}
-                <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
-                <p className="mt-1 text-sm opacity-75 drop-shadow">{statusText}</p>
-              </div>
+              showVideo && hasRemoteVideo ? (
+                <div className="pointer-events-none relative z-10 p-4">
+                  <p className="font-semibold drop-shadow">{info.peer.display_name}</p>
+                  <p className="text-xs opacity-80 drop-shadow">{statusText}</p>
+                </div>
+              ) : (
+                <div className="relative z-10 flex h-full flex-col items-center pt-24">
+                  <Avatar p={info.peer} size={112} />
+                  <h2 className="mt-5 text-2xl font-semibold drop-shadow">{info.peer.display_name}</h2>
+                  <p className="mt-1 text-sm opacity-75 drop-shadow">{statusText}</p>
+                </div>
+              )
             )}
           </div>
           {/* Buttons sit in their own bar under the picture, never on top of it */}
-          {playbackBlocked && <button onClick={enablePlayback} className={cn("mx-auto rounded-full bg-call-fg/15", minimized ? "mt-1 px-2 py-1 text-[11px]" : "mt-2 px-4 py-2 text-sm")}>Tap to enable audio</button>}
+          {playbackBlocked && <button onClick={enablePlayback} className={cn("mx-auto rounded-full", minimized ? "mt-1 bg-call-fg/15 px-2 py-1 text-[11px]" : "mt-2 bg-primary px-4 py-2 text-sm text-primary-foreground")}>Tap to enable audio</button>}
           {minimized ? (
             <div className="flex justify-center gap-2 py-2">
               <BarBtn small label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
@@ -544,17 +589,18 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
               <BarBtn small label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
             </div>
           ) : phase === "incoming" ? (
-            <div className="flex justify-center gap-16 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 sm:gap-20">
+            <div className="flex justify-center gap-16 pb-[max(2rem,env(safe-area-inset-bottom))] pt-5 sm:mt-3 sm:gap-20 sm:rounded-3xl sm:bg-call-bg sm:pb-4 sm:pt-4 sm:shadow-2xl">
               <CallBtn label="Decline" onClick={decline} className="bg-destructive"><PhoneOff /></CallBtn>
               <CallBtn label="Accept" onClick={accept} className="bg-primary">{info.video ? <Video /> : <Phone />}</CallBtn>
             </div>
           ) : (
-            <div className="flex justify-center gap-1.5 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3">
+            <div className={cn("flex justify-center gap-1 px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:mt-3 sm:w-max sm:gap-1.5 sm:self-center sm:rounded-full sm:py-2.5 sm:shadow-2xl", maximized ? "sm:mb-3 sm:bg-call-bg" : "sm:bg-call-bg")}>
               <BarBtn label={muted ? "Unmute" : "Mute"} onClick={toggleMute} active={muted}>{muted ? <MicOff /> : <Mic />}</BarBtn>
               {info.video && <BarBtn label={camOff ? "Camera on" : "Camera off"} onClick={toggleCam} active={camOff}>{camOff ? <VideoOff /> : <Video />}</BarBtn>}
               {info.video && <BarBtn label="Switch camera" onClick={switchCam}><RefreshCcw /></BarBtn>}
               <BarBtn label="Speaker" onClick={() => setLoud(!loud)} active={!loud}>{loud ? <Volume2 /> : <Volume1 />}</BarBtn>
-              <BarBtn label="Minimize" onClick={() => setMinimized(true)}><Minimize2 /></BarBtn>
+              <BarBtn label={maximized ? "Exit full screen" : "Full screen"} onClick={toggleMaximized} active={maximized}>{maximized ? <Shrink /> : <Expand />}</BarBtn>
+              <BarBtn label="Minimize" onClick={() => { leaveFullscreen(); setMaximized(false); setMinimized(true); }}><Minimize2 /></BarBtn>
               <BarBtn label="End" onClick={() => finish(true)} className="bg-destructive"><PhoneOff /></BarBtn>
             </div>
           )}
@@ -570,7 +616,7 @@ function BarBtn({ children, label, onClick, className, active, small }: { childr
       onClick={onClick}
       aria-label={label}
       title={label}
-      className={cn("flex shrink-0 items-center justify-center rounded-full", small ? "h-8 w-8 [&_svg]:h-4 [&_svg]:w-4" : "h-11 w-11 [&_svg]:h-5 [&_svg]:w-5", className ?? (active ? "bg-call-fg text-call-bg" : "bg-call-fg/15"))}
+      className={cn("flex shrink-0 items-center justify-center rounded-full", small ? "h-8 w-8 [&_svg]:h-4 [&_svg]:w-4" : "h-10 w-10 sm:h-11 sm:w-11 [&_svg]:h-5 [&_svg]:w-5", className ?? (active ? "bg-call-fg text-call-bg" : "bg-call-fg/15"))}
     >
       {children}
     </button>
