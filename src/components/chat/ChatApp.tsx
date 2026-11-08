@@ -14,10 +14,11 @@ import { CallLog } from "./CallLog";
 import { ProfilePanel } from "./ProfilePanel";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
-export function preview(m: Message | undefined, me: string) {
+export function preview(m: Message | undefined, me: string, keepsDeleted = false) {
   if (!m) return "No messages yet";
-  if (m.deleted_for_everyone) return "This message was deleted";
-  const prefix = m.sender_id === me && m.type !== "call" ? "You: " : "";
+  const keptDeleted = m.deleted_for_everyone && keepsDeleted && m.sender_id !== me && (m.content !== null || m.media_url !== null);
+  if (m.deleted_for_everyone && !keptDeleted) return "This message was deleted";
+  const prefix = keptDeleted ? "🚫 Deleted: " : m.sender_id === me && m.type !== "call" ? "You: " : "";
   if (m.type === "image") return prefix + "📷 Photo";
   if (m.type === "video") return prefix + "🎥 Video";
   if (m.type === "audio") return prefix + "🎤 Voice message";
@@ -587,7 +588,7 @@ export function ChatApp({ userId }: { userId: string }) {
                       </div>
                       {p.status_text && <div className="truncate text-xs text-muted-foreground">{p.status_text}</div>}
                       <div className="mt-0.5 flex items-center justify-between gap-2">
-                        <span className="truncate text-sm text-muted-foreground">{preview(m, me.id)}</span>
+                        <span className="truncate text-sm text-muted-foreground">{preview(m, me.id, isWatched)}</span>
                         <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
                           {isMuted && <BellOff size={14} aria-label="Muted" />}
                           {isPinned && <Pin size={14} aria-label="Pinned" />}

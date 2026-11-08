@@ -219,7 +219,7 @@ export const telegramAlert = createServerFn({ method: "POST" })
       // Call messages: distinguish missed from connected (content is "Missed … call" or "Voice call • 1:23").
       if (message.type === "call") {
         const label = message.content?.startsWith("Missed")
-          ? "📵 Missed call from"
+          ? "📵 Missed Ping from"
           : "📞 Call from";
         return { sent: await sendTelegram(`${label} ${name}`) };
       }
