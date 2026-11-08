@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
+import { compressMedia } from "@/lib/media-compress";
 import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker, type PickedGif } from "./GiphyPicker";
@@ -129,6 +130,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   });
   const playedAudioRef = useRef(playedAudio);
   const [uploading, setUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState("");
   const scroller = useRef<HTMLDivElement>(null);
   const keepBottom = useRef(true);
   const prevHeight = useRef<number | null>(null);
@@ -670,8 +672,11 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setUploading(true);
     const failed: File[] = [];
     for (const { file } of selected) {
-      const path = await upload(file, file.name.split(".").pop() || "jpg");
-      if (!path || !(await insert({ type: file.type.startsWith("video/") ? "video" : "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
+      setUploadStatus("Compressing…");
+      const media = await compressMedia(file, (fraction) => setUploadStatus(`Compressing ${Math.round(fraction * 100)}%`));
+      setUploadStatus("");
+      const path = await upload(media, media.name.split(".").pop() || "jpg");
+      if (!path || !(await insert({ type: media.type.startsWith("video/") ? "video" : "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
     }
     setUploading(false);
     pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url));
@@ -1302,8 +1307,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           </div>
           <p className="mt-2 text-xs text-muted-foreground">Tap Edit to crop, rotate, draw or add text, or Trim to cut a video.</p>
           <div className="mt-5 flex flex-col gap-2">
-            <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? "Sending…" : "Send normally"}</button>
-            <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? "Sending…" : "Send as view once"}</button>
+            <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? uploadStatus || "Sending…" : "Send normally"}</button>
+            <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? uploadStatus || "Sending…" : "Send as view once"}</button>
             <button type="button" disabled={uploading} onClick={cancelPendingImages} className="rounded-lg px-4 py-2 text-sm text-muted-foreground disabled:opacity-60">Cancel</button>
           </div>
         </Modal>

@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { TELEGRAM_FILE_MAX_BYTES, telegramRoutes } from "@/lib/telegram-media";
 
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
@@ -286,31 +287,58 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       const kept = caller?.user_id === WATCHED_USER_ID && msg.receiver_id === context.userId && !!msg.view_once_opened_at;
       if (!kept) throw new Error("View-once media can't be shared.");
     }
-    let fileUrl: string | undefined;
-    if (msg.media_url) {
-      const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(msg.media_url, 600);
-      fileUrl = signed?.signedUrl;
-    } else if ((msg.type === "gif" || msg.type === "sticker") && data.url?.startsWith("https://")) {
-      fileUrl = data.url;
-    }
-    if (!fileUrl) throw new Error("This message has no file to send.");
-    const isAnim = msg.type === "gif" || msg.type === "sticker" || /\.gif(\?|$)/i.test(fileUrl);
-    const [method, field] =
-      msg.type === "image" ? ["sendPhoto", "photo"] :
-      msg.type === "video" ? ["sendVideo", "video"] :
-      msg.type === "audio" ? ["sendAudio", "audio"] :
-      isAnim ? ["sendAnimation", "animation"] : ["sendDocument", "document"];
-    const send = async (m: string, f: string) => {
-      const res = await fetch(`https://api.telegram.org/bot${token}/${m}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, [f]: fileUrl }),
-      });
-      if (!res.ok) console.error(`Telegram ${m} failed:`, res.status, await res.text());
-      return res.ok;
+    // Returns null on success, otherwise Telegram's own explanation.
+    const send = async (m: string, init: Omit<RequestInit, "method">) => {
+      const res = await fetch(`https://api.telegram.org/bot${token}/${m}`, { method: "POST", ...init });
+      if (res.ok) return null;
+      const body = await res.text();
+      console.error(`Telegram ${m} failed:`, res.status, body);
+      try {
+        return { status: res.status, reason: String(JSON.parse(body).description) };
+      } catch {
+        return { status: res.status, reason: `HTTP ${res.status}` };
+      }
     };
-    // Fall back to sending as a plain file if Telegram rejects the typed upload.
-    const ok = (await send(method, field)) || (method !== "sendDocument" && (await send("sendDocument", "document")));
-    if (!ok) throw new Error("Telegram did not accept the file.");
-    return { sent: true };
+
+    // GIFs and stickers from the picker have no stored file; Telegram fetches their public link itself.
+    if (!msg.media_url) {
+      if ((msg.type !== "gif" && msg.type !== "sticker") || !data.url?.startsWith("https://"))
+        throw new Error("This message has no file to send.");
+      const failure = await send("sendAnimation", {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, animation: data.url }),
+      });
+      if (failure) throw new Error(`Telegram did not accept the file: ${failure.reason}`);
+      return { sent: true };
+    }
+
+    // Stored media is uploaded directly. Sending Telegram a link instead caps photos at 5 MB and
+    // other files at 20 MB, and sendDocument by link only works for GIF, PDF and ZIP.
+    const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(msg.media_url, 600);
+    if (!signed?.signedUrl) throw new Error("Could not read this file from storage.");
+    const stored = await fetch(signed.signedUrl);
+    if (!stored.ok) throw new Error("Could not read this file from storage.");
+    const tooLarge = (bytes: number) =>
+      new Error(`This file is ${Math.ceil(bytes / 1024 / 1024)} MB. Telegram bots can only send files up to 50 MB.`);
+    const declaredSize = Number(stored.headers.get("content-length")) || 0;
+    if (declaredSize > TELEGRAM_FILE_MAX_BYTES) {
+      await stored.body?.cancel();
+      throw tooLarge(declaredSize);
+    }
+    const file = await stored.blob();
+    if (file.size > TELEGRAM_FILE_MAX_BYTES) throw tooLarge(file.size);
+
+    const filename = msg.media_url.split("/").pop() || `media-${msg.id}`;
+    let failure: Awaited<ReturnType<typeof send>> = null;
+    // Each route falls through to the next, ending with a plain file.
+    for (const route of telegramRoutes(msg.type, file.type, filename, file.size)) {
+      const form = new FormData();
+      form.append("chat_id", chatId);
+      form.append(route.field, file, filename);
+      failure = await send(route.method, { body: form });
+      if (!failure) return { sent: true };
+      // Only a 400 is about this file. Anything else (bad token, bot not in channel) won't change on retry.
+      if (failure.status !== 400) break;
+    }
+    throw new Error(`Telegram did not accept the file: ${failure?.reason ?? "unknown error"}`);
   });
