@@ -337,8 +337,22 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       await stored.body?.cancel();
       return oversized();
     }
-    const file = await stored.blob();
-    if (file.size > limit) return oversized();
+    // Count while reading, so a file with no declared size can't exhaust the Worker's memory.
+    if (!stored.body) throw new Error("Could not read this file from storage.");
+    const reader = stored.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > limit) {
+        await reader.cancel();
+        return oversized();
+      }
+      chunks.push(value);
+    }
+    const file = new Blob(chunks as BlobPart[], { type: stored.headers.get("content-type") ?? "" });
 
     const filename = mediaPath.split("/").pop() || `media-${msg.id}`;
     let failure: Awaited<ReturnType<typeof send>> = null;

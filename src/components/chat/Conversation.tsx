@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { compressMedia, fitMediaToSize } from "@/lib/media-compress";
+import { compressForChat, fitMediaToSize, needsChatCompression } from "@/lib/media-compress";
 import { downloadFile, saveWithPicker } from "@/lib/save-file";
 import { TELEGRAM_TARGET_BYTES } from "@/lib/telegram-media";
 import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
@@ -133,6 +133,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const playedAudioRef = useRef(playedAudio);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
+  const [sendOriginal, setSendOriginal] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const keepBottom = useRef(true);
   const prevHeight = useRef<number | null>(null);
@@ -642,6 +643,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     pendingImageUrls.current.forEach((url) => URL.revokeObjectURL(url));
     pendingImageUrls.current.clear();
     setPendingImages([]);
+    setSendOriginal(false);
   };
 
   const chooseImages = (files: File[]) => {
@@ -674,9 +676,13 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setUploading(true);
     const failed: File[] = [];
     for (const { file } of selected) {
-      setUploadStatus("Compressing…");
-      const media = await compressMedia(file, (fraction) => setUploadStatus(`Compressing ${Math.round(fraction * 100)}%`));
-      setUploadStatus("");
+      let media = file;
+      if (!sendOriginal && needsChatCompression(file)) {
+        setUploadStatus("Compressing…");
+        media = await compressForChat(file, (fraction) => setUploadStatus(`Compressing ${Math.round(fraction * 100)}%`));
+        setUploadStatus("");
+        if (media === file) toast(`Couldn't compress ${file.name}, sending the original.`);
+      }
       const path = await upload(media, media.name.split(".").pop() || "jpg");
       if (!path || !(await insert({ type: media.type.startsWith("video/") ? "video" : "image", media_url: path, ...(viewOnce ? { view_once: true } : {}) }))) failed.push(file);
     }
@@ -689,6 +695,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       return { file, previewUrl };
     });
     setPendingImages(remaining);
+    if (!remaining.length) setSendOriginal(false);
   };
 
   const sendVoice = async (blob: Blob, secs: number, mime: string) => {
@@ -1331,6 +1338,15 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             ))}
           </div>
           <p className="mt-2 text-xs text-muted-foreground">Tap Edit to crop, rotate, draw or add text, or Trim to cut a video.</p>
+          {pendingImages.some(({ file }) => needsChatCompression(file)) && (
+            <label className="mt-3 flex cursor-pointer items-start gap-2 rounded-lg border p-3 text-sm">
+              <input type="checkbox" disabled={uploading} checked={sendOriginal} onChange={(e) => setSendOriginal(e.target.checked)} className="mt-0.5 h-4 w-4 accent-primary" />
+              <span>
+                <span className="font-medium">Send uncompressed</span>
+                <span className="block text-xs text-muted-foreground">Large files are compressed to send faster and use less data. Tick to keep the original quality.</span>
+              </span>
+            </label>
+          )}
           <div className="mt-5 flex flex-col gap-2">
             <button type="button" disabled={uploading} onClick={() => void sendImages(false)} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground disabled:opacity-60">{uploading ? uploadStatus || "Sending…" : "Send normally"}</button>
             <button type="button" disabled={uploading} onClick={() => void sendImages(true)} className="flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium disabled:opacity-60"><Clock3 className="h-4 w-4" />{uploading ? uploadStatus || "Sending…" : "Send as view once"}</button>
