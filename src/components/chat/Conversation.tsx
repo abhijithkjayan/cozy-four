@@ -7,7 +7,8 @@ import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
-import { compressMedia } from "@/lib/media-compress";
+import { compressMedia, fitMediaToSize } from "@/lib/media-compress";
+import { TELEGRAM_TARGET_BYTES } from "@/lib/telegram-media";
 import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker, type PickedGif } from "./GiphyPicker";
@@ -722,6 +723,35 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     return new File([blob], filename, { type: blob.type || "application/octet-stream" });
   };
 
+  const sendToTelegram = async (message: Message, url?: string) => {
+    const id = toast.loading("Sending to Telegram…");
+    let tempPath: string | null = null;
+    try {
+      const share = (compressedPath?: string) =>
+        shareToTelegram({ data: { messageId: message.id, ...(url ? { url } : {}), ...(compressedPath ? { compressedPath } : {}) } });
+      let result = await share();
+      if (!result.sent) {
+        // Over Telegram's limit: send a smaller temporary copy. The copy in the chat stays untouched.
+        toast.loading("Compressing for Telegram…", { id });
+        const original = await getAttachmentFile(message, url);
+        let shown = -1;
+        const small = await fitMediaToSize(original, TELEGRAM_TARGET_BYTES, (fraction) => {
+          const percent = Math.round(fraction * 100);
+          if (percent !== shown) toast.loading(`Compressing for Telegram ${(shown = percent)}%`, { id });
+        });
+        toast.loading("Sending to Telegram…", { id });
+        tempPath = await upload(small, small.name.split(".").pop() || "bin");
+        if (!tempPath) throw new Error("Could not prepare the compressed file.");
+        result = await share(tempPath);
+      }
+      toast.success("Sent to Telegram", { id });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not send to Telegram", { id });
+    } finally {
+      if (tempPath) void supabase.storage.from("chat-media").remove([tempPath]);
+    }
+  };
+
   const saveFile = (file: File) => {
     const objectUrl = URL.createObjectURL(file);
     const link = document.createElement("a");
@@ -1091,7 +1121,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     viewImage: (m) => void viewImage(m),
     share: (m, url, title) => void shareAttachment(m, url, title),
     download: (m, url, title) => void downloadAttachment(m, url, title),
-    telegram: (m, url) => { toast.promise(shareToTelegram({ data: { messageId: m.id, ...(url ? { url } : {}) } }), { loading: "Sending to Telegram…", success: "Sent to Telegram", error: (e: unknown) => (e instanceof Error ? e.message : "Could not send to Telegram") }); },
+    telegram: (m, url) => { void sendToTelegram(m, url); },
     pin: (m) => void togglePin(m),
     removeDeleted: (m) => void removeDeleted(m),
     deleteForMe: (m) => void deleteForMe(m),

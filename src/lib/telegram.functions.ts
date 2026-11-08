@@ -1,6 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
-import { TELEGRAM_FILE_MAX_BYTES, telegramRoutes } from "@/lib/telegram-media";
+import { TELEGRAM_FILE_MAX_BYTES, TELEGRAM_TARGET_BYTES, telegramRoutes } from "@/lib/telegram-media";
 
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
@@ -265,7 +265,11 @@ export function sendTelegramAlert(input: AlertInput) {
 /** Sends a chat photo/video/file (or GIF link) to the Telegram channel. Caller must be able to read the message (RLS). */
 export const shareToTelegram = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
-  .validator((input: { messageId: string; url?: string }) => ({ messageId: String(input.messageId), url: input.url ? String(input.url) : undefined }))
+  .validator((input: { messageId: string; url?: string; compressedPath?: string }) => ({
+    messageId: String(input.messageId),
+    url: input.url ? String(input.url) : undefined,
+    compressedPath: input.compressedPath ? String(input.compressedPath) : undefined,
+  }))
   .handler(async ({ data, context }) => {
     const token = process.env["T_BOT"];
     if (!token) throw new Error("Telegram bot is not configured.");
@@ -314,21 +318,29 @@ export const shareToTelegram = createServerFn({ method: "POST" })
 
     // Stored media is uploaded directly. Sending Telegram a link instead caps photos at 5 MB and
     // other files at 20 MB, and sendDocument by link only works for GIF, PDF and ZIP.
-    const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(msg.media_url, 600);
+    // A compressed copy is the caller's own temporary upload of this message's media.
+    if (data.compressedPath && (!data.compressedPath.startsWith(`${context.userId}/`) || data.compressedPath.includes("..")))
+      throw new Error("Invalid compressed file.");
+    const mediaPath = data.compressedPath ?? msg.media_url;
+    const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(mediaPath, 600);
     if (!signed?.signedUrl) throw new Error("Could not read this file from storage.");
     const stored = await fetch(signed.signedUrl);
     if (!stored.ok) throw new Error("Could not read this file from storage.");
-    const tooLarge = (bytes: number) =>
-      new Error(`This file is ${Math.ceil(bytes / 1024 / 1024)} MB. Telegram bots can only send files up to 50 MB.`);
+    // Too big for Telegram: the browser shrinks it and calls again with compressedPath.
+    const limit = data.compressedPath ? TELEGRAM_FILE_MAX_BYTES : TELEGRAM_TARGET_BYTES;
+    const oversized = () => {
+      if (data.compressedPath) throw new Error("The compressed file is still over Telegram's 50 MB limit.");
+      return { sent: false, needsCompression: true };
+    };
     const declaredSize = Number(stored.headers.get("content-length")) || 0;
-    if (declaredSize > TELEGRAM_FILE_MAX_BYTES) {
+    if (declaredSize > limit) {
       await stored.body?.cancel();
-      throw tooLarge(declaredSize);
+      return oversized();
     }
     const file = await stored.blob();
-    if (file.size > TELEGRAM_FILE_MAX_BYTES) throw tooLarge(file.size);
+    if (file.size > limit) return oversized();
 
-    const filename = msg.media_url.split("/").pop() || `media-${msg.id}`;
+    const filename = mediaPath.split("/").pop() || `media-${msg.id}`;
     let failure: Awaited<ReturnType<typeof send>> = null;
     // Each route falls through to the next, ending with a plain file.
     for (const route of telegramRoutes(msg.type, file.type, filename, file.size)) {
