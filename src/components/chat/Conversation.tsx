@@ -8,6 +8,7 @@ import { Avatar } from "./Avatar";
 import { AppleEmoji } from "./AppleEmoji";
 import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { compressMedia, fitMediaToSize } from "@/lib/media-compress";
+import { downloadFile, saveWithPicker } from "@/lib/save-file";
 import { TELEGRAM_TARGET_BYTES } from "@/lib/telegram-media";
 import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
@@ -702,23 +703,25 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     insert({ type: kind, content: JSON.stringify(item) });
   };
 
+  const attachmentName = (message: Message, url?: string, title?: string) => {
+    if (message.media_url) return decodeURIComponent(message.media_url.split("/").pop() || `attachment-${message.id}`);
+    if (!url) throw new Error("Attachment not found");
+    const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1] || "gif";
+    const filename = title?.trim().replace(/[\\/:*?"<>|]/g, "_") || `attachment-${message.id}`;
+    return /\.[a-z0-9]{2,5}$/i.test(filename) ? filename : `${filename}.${extension}`;
+  };
+
   const getAttachmentFile = async (message: Message, url?: string, title?: string) => {
+    const filename = attachmentName(message, url, title);
     let blob: Blob;
-    let filename: string;
     if (message.media_url) {
       const { data, error } = await supabase.storage.from("chat-media").download(message.media_url);
       if (error || !data) throw error ?? new Error("Attachment not found");
       blob = data;
-      filename = decodeURIComponent(message.media_url.split("/").pop() || `attachment-${message.id}`);
-    } else if (url) {
-      const response = await fetch(url);
+    } else {
+      const response = await fetch(url as string);
       if (!response.ok) throw new Error("Download failed");
       blob = await response.blob();
-      const extension = new URL(url).pathname.match(/\.([a-z0-9]{2,5})$/i)?.[1] || "gif";
-      filename = title?.trim().replace(/[\\/:*?"<>|]/g, "_") || `attachment-${message.id}`;
-      if (!/\.[a-z0-9]{2,5}$/i.test(filename)) filename += `.${extension}`;
-    } else {
-      throw new Error("Attachment not found");
     }
     return new File([blob], filename, { type: blob.type || "application/octet-stream" });
   };
@@ -752,20 +755,12 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     }
   };
 
-  const saveFile = (file: File) => {
-    const objectUrl = URL.createObjectURL(file);
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = file.name;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-  };
+  const saveFile = downloadFile;
 
   const downloadAttachment = async (message: Message, url?: string, title?: string) => {
     try {
-      saveFile(await getAttachmentFile(message, url, title));
+      const name = attachmentName(message, url, title);
+      if (await saveWithPicker(name, () => getAttachmentFile(message, url, title))) toast.success("Saved");
     } catch {
       alert("Could not download this attachment. Please try again.");
     }
