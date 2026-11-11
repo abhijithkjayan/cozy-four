@@ -141,8 +141,6 @@ export type Database = {
           type: string
           view_once: boolean
           view_once_opened_at: string | null
-          pinned_at: string | null
-          pinned_by: string | null
         }
         Insert: {
           content?: string | null
@@ -160,8 +158,6 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
-          pinned_at?: string | null
-          pinned_by?: string | null
         }
         Update: {
           content?: string | null
@@ -179,8 +175,6 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
-          pinned_at?: string | null
-          pinned_by?: string | null
         }
         Relationships: [
           {
@@ -256,7 +250,6 @@ export type Database = {
           show_online_status: boolean
           status_text: string
           telegram_alerts_enabled: boolean
-          telegram_alerts_changed_at: string | null
           user_id: string
         }
         Insert: {
@@ -269,7 +262,6 @@ export type Database = {
           show_online_status?: boolean
           status_text?: string
           telegram_alerts_enabled?: boolean
-          telegram_alerts_changed_at?: string | null
           user_id: string
         }
         Update: {
@@ -282,7 +274,6 @@ export type Database = {
           show_online_status?: boolean
           status_text?: string
           telegram_alerts_enabled?: boolean
-          telegram_alerts_changed_at?: string | null
           user_id?: string
         }
         Relationships: []
