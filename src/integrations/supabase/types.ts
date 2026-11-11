@@ -133,6 +133,8 @@ export type Database = {
           delivered_at: string | null
           id: string
           media_url: string | null
+          pinned_at: string | null
+          pinned_by: string | null
           read_at: string | null
           receiver_id: string
           reply_to: string | null
@@ -141,8 +143,6 @@ export type Database = {
           type: string
           view_once: boolean
           view_once_opened_at: string | null
-          pinned_at: string | null
-          pinned_by: string | null
         }
         Insert: {
           content?: string | null
@@ -152,6 +152,8 @@ export type Database = {
           delivered_at?: string | null
           id?: string
           media_url?: string | null
+          pinned_at?: string | null
+          pinned_by?: string | null
           read_at?: string | null
           receiver_id: string
           reply_to?: string | null
@@ -160,8 +162,6 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
-          pinned_at?: string | null
-          pinned_by?: string | null
         }
         Update: {
           content?: string | null
@@ -171,6 +171,8 @@ export type Database = {
           delivered_at?: string | null
           id?: string
           media_url?: string | null
+          pinned_at?: string | null
+          pinned_by?: string | null
           read_at?: string | null
           receiver_id?: string
           reply_to?: string | null
@@ -179,10 +181,15 @@ export type Database = {
           type?: string
           view_once?: boolean
           view_once_opened_at?: string | null
-          pinned_at?: string | null
-          pinned_by?: string | null
         }
         Relationships: [
+          {
+            foreignKeyName: "messages_pinned_by_fkey"
+            columns: ["pinned_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "messages_receiver_id_fkey"
             columns: ["receiver_id"]
@@ -255,8 +262,8 @@ export type Database = {
           read_receipts_enabled: boolean
           show_online_status: boolean
           status_text: string
-          telegram_alerts_enabled: boolean
           telegram_alerts_changed_at: string | null
+          telegram_alerts_enabled: boolean
           user_id: string
         }
         Insert: {
@@ -268,8 +275,8 @@ export type Database = {
           read_receipts_enabled?: boolean
           show_online_status?: boolean
           status_text?: string
-          telegram_alerts_enabled?: boolean
           telegram_alerts_changed_at?: string | null
+          telegram_alerts_enabled?: boolean
           user_id: string
         }
         Update: {
@@ -281,8 +288,8 @@ export type Database = {
           read_receipts_enabled?: boolean
           show_online_status?: boolean
           status_text?: string
-          telegram_alerts_enabled?: boolean
           telegram_alerts_changed_at?: string | null
+          telegram_alerts_enabled?: boolean
           user_id?: string
         }
         Relationships: []
