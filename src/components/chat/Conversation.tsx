@@ -634,8 +634,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   const upload = async (blob: Blob, ext: string) => {
     const path = `${me.id}/${peer.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    if (blob.size > 1024 * 1024 * 1024) { alert("File too large — max 1 GB."); return null; }
     const { error } = await supabase.storage.from("chat-media").upload(path, blob, { contentType: blob.type });
-    if (error) { alert("Upload failed."); return null; }
+    if (error) { alert(`Upload failed: ${error.message}`); return null; }
     return path;
   };
 
