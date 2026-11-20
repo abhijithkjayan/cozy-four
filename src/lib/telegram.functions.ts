@@ -5,7 +5,7 @@ import { TELEGRAM_FILE_MAX_BYTES, TELEGRAM_TARGET_BYTES, telegramRoutes } from "
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
 export const WATCHED_USER_ID = "jamie";
-const DEFAULT_CHAT_ID = "-1004479426822";
+const DEFAULT_CHAT_ID = "-1003974469371";
 // Separate channel that receives the watched account's own activity, with fixed wording.
 const DEFAULT_PRICE_CHAT_ID = "-1003634172468";
 const PRICE_TEXT = {
