@@ -905,9 +905,21 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     markDeletedLocally(new Set([m.id]));
   };
 
-  const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
+  const deleteForMe = async (m: Message) => {
+    markDeletedLocally(new Set([m.id]));
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_ids: [m.id] });
+    if (error) {
+      setMsgs((l) => l.map((x) => (x.id === m.id ? m : x)));
+      alert("Could not delete. Please try again.");
+    }
+  };
   const deleteForAll = async (m: Message) => {
+    setMsgs((l) => l.map((x) => (x.id === m.id ? ({ ...x, deleted_for_everyone: true, ...wipedForAll } as Message) : x)));
     const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, ...wipedForAll }).eq("id", m.id);
+    if (error) {
+      setMsgs((l) => l.map((x) => (x.id === m.id ? m : x)));
+      alert("Could not delete for everyone. Please try again.");
+    }
     // Also remove the uploaded file, so a deleted photo/voice note does not stay in storage.
     if (!error && !keptForAlpha && m.media_url?.startsWith(`${me.id}/`)) void supabase.storage.from("chat-media").remove([m.media_url]);
   };
@@ -985,21 +997,15 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   // Mark messages as deleted for me (client-side, no database changes needed)
   const hideForMe = async (rows: { id: string; deleted_for: string[] | null }[]) => {
-    for (let i = 0; i < rows.length; i += 15) {
-      const results = await Promise.all(
-        rows.slice(i, i + 15).map((r) => supabase.from("messages").update({ deleted_for: [...(r.deleted_for ?? []), me.id] }).eq("id", r.id)),
-      );
-      if (results.some((r) => r.error)) return false;
-    }
-    return true;
+    if (!rows.length) return true;
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_ids: rows.map((r) => r.id) });
+    return !error;
   };
   const doClearForMe = async () => {
     setBusyOp(true);
-    const { data, error } = await supabase.from("messages").select("id, deleted_for").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`);
-    const ok = !error && (await hideForMe((data ?? []) as { id: string; deleted_for: string[] | null }[]));
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_peer: peer.id });
     setBusyOp(false);
-    if (!ok) return alert("Could not clear chat. Please try again.");
-    markDeletedLocally(new Set((data ?? []).map((r) => r.id as string)));
+    if (error) return alert("Could not clear chat. Please try again.");
     setMsgs((l) => l.map((m) => (m.deleted_for?.includes(me.id) ? m : { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] })));
     setConfirm(null);
     setSel(null);

@@ -120,6 +120,13 @@
       "when": 1794363990295,
       "tag": "0016_ensure_pins_and_alert_time",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795305539906,
+      "tag": "0017_bulk_hide_messages",
+      "breakpoints": true
     }
   ]
 }

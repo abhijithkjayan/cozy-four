@@ -299,6 +299,10 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      hide_messages_for_me: {
+        Args: { p_ids?: string[]; p_peer?: string }
+        Returns: number
+      }
       open_view_once_message: {
         Args: { p_message_id: string }
         Returns: string
