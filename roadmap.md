@@ -12,3 +12,4 @@
 - Second fix user mentioned earlier — never specified; ask user
 - [x] Instagram button opens native app (instagram:// with web fallback), no logout while away
 - [x] Videos play in correct aspect ratio
+- [ ] Fix media sent to Telegram (photos/videos/files issues)

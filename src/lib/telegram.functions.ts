@@ -361,6 +361,8 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       const form = new FormData();
       form.append("chat_id", chatId);
       form.append(route.field, file, filename);
+      // Without this Telegram shows videos as a download with no inline player.
+      if (route.method === "sendVideo") form.append("supports_streaming", "true");
       failure = await send(route.method, { body: form });
       if (!failure) return { sent: true };
       // Only a 400 is about this file. Anything else (bad token, bot not in channel) won't change on retry.
