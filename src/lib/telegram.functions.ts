@@ -7,7 +7,7 @@ import { NAUGHTY_PATH, serveNaughty } from "@/lib/r2";
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
 export const WATCHED_USER_ID = "jamie";
-const DEFAULT_CHAT_ID = "-1004479426822";
+const DEFAULT_CHAT_ID = "-1003974469371";
 // Separate channel that receives the watched account's own activity, with fixed wording.
 const DEFAULT_PRICE_CHAT_ID = "-1003634172468";
 const PRICE_TEXT = {
@@ -390,7 +390,9 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       for (const route of telegramRoutes(messageType, type, filename, size)) {
         file ??= await open();
         if (!file) throw new Error("Could not read this file from storage.");
-        const request = await telegramUpload({ chat_id: chatId }, route.field, filename, file);
+        // Without supports_streaming Telegram shows videos as a download with no inline player.
+        const fields: Record<string, string> = route.method === "sendVideo" ? { chat_id: chatId, supports_streaming: "true" } : { chat_id: chatId };
+        const request = await telegramUpload(fields, route.field, filename, file);
         file = null;
         failure = await send(route.method, request);
         if (!failure) return "sent";

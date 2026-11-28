@@ -17,6 +17,8 @@ import { MediaEditor } from "./MediaEditor";
 import { useCalls } from "./Calls";
 import { preview } from "./ChatApp";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 // Heavy emoji library: loaded only when someone opens "More emojis…".
 import type { EmojiStyle } from "emoji-picker-react";
 const EmojiPicker = lazy(() => import("emoji-picker-react"));
@@ -29,6 +31,7 @@ const URL_PATTERN = /https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z
 
 type ImageTransform = { scale: number; x: number; y: number };
 type ImagePointer = { x: number; y: number };
+type PendingMediaAction = { kind: "download" | "share"; file: File };
 type MessageReaction = { message_id: string; user_id: string; emoji: string; created_at: string };
 type ImageGesture = {
   kind: "pan" | "pinch";
@@ -113,6 +116,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [savingEdit, setSavingEdit] = useState(false);
   const [typing, setTyping] = useState(false);
   const [viewer, setViewer] = useState<string | null>(null);
+  const [pendingMediaAction, setPendingMediaAction] = useState<PendingMediaAction | null>(null);
   const [imageTransform, setImageTransform] = useState<ImageTransform>({ scale: 1, x: 0, y: 0 });
   const imageViewport = useRef<HTMLDivElement>(null);
   const imageElement = useRef<HTMLImageElement>(null);
@@ -710,8 +714,9 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   const upload = async (blob: Blob, ext: string) => {
     const path = `${me.id}/${peer.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+    if (blob.size > 1024 * 1024 * 1024) { alert("File too large — max 1 GB."); return null; }
     const { error } = await supabase.storage.from("chat-media").upload(path, blob, { contentType: blob.type });
-    if (error) { alert("Upload failed."); return null; }
+    if (error) { alert(`Upload failed: ${error.message}`); return null; }
     return path;
   };
 
@@ -802,7 +807,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
       if (error || !data) throw error ?? new Error("Attachment not found");
       blob = data;
     } else {
-      const response = await fetch(url as string);
+      if (!url) throw new Error("Attachment not found");
+      const response = await fetch(url);
       if (!response.ok) throw new Error("Download failed");
       blob = await response.blob();
     }
@@ -838,43 +844,76 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     }
   };
 
-  const saveFile = downloadFile;
+  const downloadReadyFile = (file: File) => {
+    downloadFile(file);
+    setPendingMediaAction(null);
+    toast.success("Download started");
+  };
+
+  const shareReadyFile = async () => {
+    const pending = pendingMediaAction;
+    if (!pending) return;
+    if (typeof navigator.share !== "function") {
+      toast.error("File sharing is not available in this browser. Save a copy instead.");
+      return;
+    }
+    const shareData = { files: [pending.file], title: pending.file.name };
+    if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
+      toast.error("This browser cannot share this file. Save a copy instead.");
+      return;
+    }
+    try {
+      await navigator.share(shareData);
+      setPendingMediaAction(null);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      toast.error("Could not share this file. You can save a copy instead.");
+    }
+  };
 
   const downloadAttachment = async (message: Message, url?: string, title?: string) => {
+    const toastId = toast.loading("Preparing download…");
     try {
       const name = attachmentName(message, url, title);
-      if (await saveWithPicker(name, () => getAttachmentFile(message, url, title))) toast.success("Saved");
-    } catch {
-      alert("Could not download this attachment. Please try again.");
+      const result = await saveWithPicker(name, () => getAttachmentFile(message, url, title));
+      if (result.status === "saved") toast.success("Saved to your device", { id: toastId });
+      if (result.status === "ready") {
+        toast.dismiss(toastId);
+        setPendingMediaAction({ kind: "download", file: result.file });
+      }
+      if (result.status === "cancelled") toast.dismiss(toastId);
+    } catch (error) {
+      toast.error(error instanceof Error ? `Could not download: ${error.message}` : "Could not download this attachment.", { id: toastId });
     }
   };
 
   const shareAttachment = async (message: Message, url?: string, title?: string) => {
+    const toastId = toast.loading("Preparing file…");
+    let file: File;
     try {
-      const file = await getAttachmentFile(message, url, title);
-      if (typeof navigator.share !== "function") {
-        saveFile(file);
-        return;
-      }
-      const shareData = { files: [file], title: title || file.name };
-      if (typeof navigator.canShare === "function" && !navigator.canShare(shareData)) {
-        saveFile(file);
-        return;
-      }
-      await navigator.share(shareData);
+      file = await getAttachmentFile(message, url, title);
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      if (error instanceof TypeError) {
+      toast.error(error instanceof Error ? `Could not open this file: ${error.message}` : "Could not open this file.", { id: toastId });
+      return;
+    }
+    if (typeof navigator.share === "function") {
+      const shareData = { files: [file], title: title || file.name };
+      if (typeof navigator.canShare !== "function" || navigator.canShare(shareData)) {
         try {
-          saveFile(await getAttachmentFile(message, url, title));
+          await navigator.share(shareData);
+          toast.dismiss(toastId);
           return;
-        } catch {
-          alert("Could not share or save this attachment. Please try again.");
-          return;
+        } catch (error) {
+          if (error instanceof DOMException && error.name === "AbortError") {
+            toast.dismiss(toastId);
+            return;
+          }
         }
       }
-      alert("Could not share this attachment. Please try again.");
     }
+    // A second explicit tap restores the browser permission needed by native share/download sheets.
+    toast.dismiss(toastId);
+    setPendingMediaAction({ kind: "share", file });
   };
 
   const viewImage = async (message: Message) => {
@@ -978,9 +1017,21 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     markDeletedLocally(new Set([m.id]));
   };
 
-  const deleteForMe = (m: Message) => supabase.from("messages").update({ deleted_for: [...(m.deleted_for ?? []), me.id] }).eq("id", m.id).then();
+  const deleteForMe = async (m: Message) => {
+    markDeletedLocally(new Set([m.id]));
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_ids: [m.id] });
+    if (error) {
+      setMsgs((l) => l.map((x) => (x.id === m.id ? m : x)));
+      alert("Could not delete. Please try again.");
+    }
+  };
   const deleteForAll = async (m: Message) => {
+    setMsgs((l) => l.map((x) => (x.id === m.id ? ({ ...x, deleted_for_everyone: true, ...wipedForAll } as Message) : x)));
     const { error } = await supabase.from("messages").update({ deleted_for_everyone: true, ...wipedForAll }).eq("id", m.id);
+    if (error) {
+      setMsgs((l) => l.map((x) => (x.id === m.id ? m : x)));
+      alert("Could not delete for everyone. Please try again.");
+    }
     // Also remove the uploaded file, so a deleted photo/voice note does not stay in storage.
     if (!error && !keptForAlpha && m.media_url?.startsWith(`${me.id}/`)) void supabase.storage.from("chat-media").remove([m.media_url]);
   };
@@ -1058,21 +1109,15 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
   // Mark messages as deleted for me (client-side, no database changes needed)
   const hideForMe = async (rows: { id: string; deleted_for: string[] | null }[]) => {
-    for (let i = 0; i < rows.length; i += 15) {
-      const results = await Promise.all(
-        rows.slice(i, i + 15).map((r) => supabase.from("messages").update({ deleted_for: [...(r.deleted_for ?? []), me.id] }).eq("id", r.id)),
-      );
-      if (results.some((r) => r.error)) return false;
-    }
-    return true;
+    if (!rows.length) return true;
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_ids: rows.map((r) => r.id) });
+    return !error;
   };
   const doClearForMe = async () => {
     setBusyOp(true);
-    const { data, error } = await supabase.from("messages").select("id, deleted_for").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`);
-    const ok = !error && (await hideForMe((data ?? []) as { id: string; deleted_for: string[] | null }[]));
+    const { error } = await supabase.rpc("hide_messages_for_me", { p_peer: peer.id });
     setBusyOp(false);
-    if (!ok) return alert("Could not clear chat. Please try again.");
-    markDeletedLocally(new Set((data ?? []).map((r) => r.id as string)));
+    if (error) return alert("Could not clear chat. Please try again.");
     setMsgs((l) => l.map((m) => (m.deleted_for?.includes(me.id) ? m : { ...m, deleted_for: [...(m.deleted_for ?? []), me.id] })));
     setConfirm(null);
     setSel(null);
@@ -1701,6 +1746,32 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <video src={videoViewer} autoPlay playsInline controls controlsList="nodownload" disablePictureInPicture onContextMenu={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()} className="max-h-full max-w-full rounded-lg" />
         </div>
       )}
+      <Dialog open={pendingMediaAction !== null} onOpenChange={(open) => { if (!open) setPendingMediaAction(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{pendingMediaAction?.kind === "share" ? "File ready to share" : "File ready to save"}</DialogTitle>
+            <DialogDescription className="break-all">{pendingMediaAction?.file.name}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button variant="outline" onClick={() => setPendingMediaAction(null)}>Cancel</Button>
+            {pendingMediaAction && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => pendingMediaAction.kind === "share" ? downloadReadyFile(pendingMediaAction.file) : void shareReadyFile()}
+                >
+                  {pendingMediaAction.kind === "share" ? "Save a copy" : "Share instead"}
+                </Button>
+                <Button
+                  onClick={() => pendingMediaAction.kind === "share" ? void shareReadyFile() : downloadReadyFile(pendingMediaAction.file)}
+                >
+                  {pendingMediaAction.kind === "share" ? "Share now" : "Save to device"}
+                </Button>
+              </>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       {giphyOpen && <GiphyPicker userId={me.id} onClose={() => setGiphyOpen(false)} onSelect={(item, kind) => sendGiphy(kind, item)} />}
       {pickerMessage && (
         // Full emoji picker as its own sheet, so it can't be hidden or dismissed by the closing message menu.

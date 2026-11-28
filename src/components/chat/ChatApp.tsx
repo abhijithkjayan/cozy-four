@@ -315,7 +315,13 @@ export function ChatApp({ userId }: { userId: string }) {
       const peer = m.sender_id === meId ? m.receiver_id : m.sender_id;
       setLast((l) => {
         const cur = l[peer];
-        if (m.deleted_for?.includes(me.id)) return cur?.id === m.id ? { ...l, [peer]: undefined } : l;
+        if (m.deleted_for?.includes(me.id)) {
+          if (cur?.id !== m.id) return l;
+          void supabase.from("messages").select("*").or(pairFilter(meId, peer)).not("deleted_for", "cs", `{${meId}}`)
+            .order("created_at", { ascending: false }).limit(1).maybeSingle()
+            .then(({ data }) => setLast((x) => (x[peer]?.id === m.id || !x[peer] ? { ...x, [peer]: (data as Message | null) ?? undefined } : x)));
+          return { ...l, [peer]: undefined };
+        }
         if (!cur || cur.id === m.id || new Date(m.created_at) >= new Date(cur.created_at)) return { ...l, [peer]: m };
         return l;
       });
