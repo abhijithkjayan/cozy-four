@@ -6,7 +6,7 @@ import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
 import { ICE_SERVERS, loadIceConfig, warmIceConfig } from "@/lib/ice";
 import { startRing, stopRing, notify, primeAudio } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
-import { idleState } from "@/lib/security";
+import { beforeLogout, idleState } from "@/lib/security";
 import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
 import { firstCallWins } from "@/lib/callOrder";
 import { Avatar } from "./Avatar";
@@ -27,6 +27,28 @@ type Phase = "idle" | "outgoing" | "incoming" | "connecting" | "active";
 
 const MINI_W = "min(36vw, 180px)";
 
+// Without a size the browser picks 640x480, which looks soft when the call fills a phone screen.
+const cameraConstraints = (facingMode: "user" | "environment"): MediaTrackConstraints => ({
+  facingMode,
+  width: { ideal: 1280 },
+  height: { ideal: 720 },
+  frameRate: { ideal: 30, max: 30 },
+});
+
+// Browsers start video calls at a low bitrate. Allow up to 2.5 Mbps; WebRTC still lowers it
+// by itself on a weak connection, dropping the frame rate before the sharpness.
+async function raiseVideoBitrate(sender: RTCRtpSender) {
+  try {
+    const params = sender.getParameters() as RTCRtpSendParameters & { degradationPreference?: string };
+    if (!params.encodings?.length) params.encodings = [{}];
+    for (const encoding of params.encodings) encoding.maxBitrate = 2_500_000;
+    params.degradationPreference = "maintain-resolution";
+    await sender.setParameters(params);
+  } catch (error) {
+    console.warn("[call] could not raise the video bitrate:", error);
+  }
+}
+
 const leaveFullscreen = () => {
   if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
 };
@@ -42,7 +64,11 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const [loud, setLoud] = useState(true);
   const [elapsed, setElapsed] = useState(0);
   const [hasRemoteVideo, setHasRemoteVideo] = useState(false);
+  // A wide picture (other phone held sideways, or a laptop) is shown whole instead of cropped and stretched.
+  const [remoteLandscape, setRemoteLandscape] = useState(false);
   const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  // The connection dropped mid-call and is being looked for again.
+  const [reconnecting, setReconnecting] = useState(false);
   const [minimized, setMinimized] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [controlsShown, setControlsShown] = useState(true);
@@ -130,7 +156,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     startedAt.current = null;
     if (remoteVid.current) { remoteVid.current.srcObject = null; remoteVid.current.muted = false; }
     if (remoteAudio.current) { remoteAudio.current.srcObject = null; remoteAudio.current.muted = false; }
-    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false); setMaximized(false); setMirrored(true);
+    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setRemoteLandscape(false); setReconnecting(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false); setMaximized(false); setMirrored(true);
     leaveFullscreen();
     setI(null);
     setP("idle");
@@ -260,12 +286,15 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       const c = p.connectionState, iceState = p.iceConnectionState;
       if (c === "connected" || iceState === "connected" || iceState === "completed") {
         clearTimeout(dropTimer);
+        setReconnecting(false);
         goActive();
         void logRoute(p);
       } else if (c === "failed" || iceState === "failed") {
+        if (startedAt.current) setReconnecting(true);
         restart();
         giveUpIfDown(20000);
       } else if (c === "disconnected" || iceState === "disconnected") {
+        if (startedAt.current) setReconnecting(true);
         // Often a change of network (Wi-Fi to mobile data): try a new route after a short wait.
         window.setTimeout(() => {
           if (pc.current === p && p.iceConnectionState === "disconnected") restart();
@@ -275,13 +304,18 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     };
     p.onconnectionstatechange = onState;
     p.oniceconnectionstatechange = onState;
-    local.current!.getTracks().forEach((t) => p.addTrack(t, local.current!));
+    local.current!.getTracks().forEach((t) => {
+      // Tells the encoder this is a live camera, so it keeps the picture smooth rather than blocky.
+      if (t.kind === "video" && "contentHint" in t) t.contentHint = "motion";
+      const sender = p.addTrack(t, local.current!);
+      if (t.kind === "video") void raiseVideoBitrate(sender);
+    });
     pc.current = p;
     return p;
   };
 
   const getMedia = (video: boolean) =>
-    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: video ? { facingMode: facing.current } : false });
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: video ? cameraConstraints(facing.current) : false });
 
   const flushIce = async () => {
     for (const c of pendingIce.current) await pc.current?.addIceCandidate(c).catch(() => {});
@@ -294,6 +328,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     clearTimeout(timeout.current);
     startedAt.current = Date.now();
     setP("active");
+    // Some browsers only accept the bitrate once the call is connected.
+    const videoSender = pc.current?.getSenders().find((x) => x.track?.kind === "video");
+    if (videoSender) void raiseVideoBitrate(videoSender);
     const i = infoRef.current;
     if (i) {
       supabase
@@ -443,17 +480,24 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         if (s.restart) return;
         let autoAccept = false;
         if (cur) {
+          const samePeer = cur.peer.id === s.from;
           // Each called the other. Keep the first call; the other side's call yields to it.
-          const crossed = cur.peer.id === s.from && cur.role === "caller" && phaseRef.current === "outgoing";
-          if (!crossed) {
+          const crossed = samePeer && cur.role === "caller" && phaseRef.current === "outgoing";
+          if (samePeer && !crossed) {
+            // The same person is calling again, so their side of the old call is gone (they lost the
+            // connection, closed the app or logged out). End the old call here and ring the new one,
+            // instead of answering "busy on another call".
+            await finish(false);
+          } else if (!crossed) {
             void send(s.from, { kind: "busy", callId: s.callId });
             return;
+          } else {
+            if (firstCallWins(cur, { id: s.callId, ts: s.ts })) return;
+            // Both already chose to talk, so connect straight away unless it would turn the camera on unasked
+            autoAccept = cur.video || !s.video;
+            supabase.from("calls").update({ status: "missed", ended_at: new Date().toISOString() }).eq("id", cur.id).then();
+            cleanup();
           }
-          if (firstCallWins(cur, { id: s.callId, ts: s.ts })) return;
-          // Both already chose to talk, so connect straight away unless it would turn the camera on unasked
-          autoAccept = cur.video || !s.video;
-          supabase.from("calls").update({ status: "missed", ended_at: new Date().toISOString() }).eq("id", cur.id).then();
-          cleanup();
         }
         const peer = profilesRef.current.find((p) => p.id === s.from);
         if (!peer) return;
@@ -540,6 +584,27 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   useEffect(() => { idleState.paused = phase !== "idle"; return () => { idleState.paused = false; }; }, [phase]);
 
+  // Logging out, closing the tab or leaving the page ends the call for the other phone straight
+  // away. Without this it showed a frozen black picture until its own timeout ran out.
+  const leaveCall = useCallback(async () => {
+    const i = infoRef.current;
+    if (!i) return;
+    const signal = send(i.peer.id, { kind: phaseRef.current === "outgoing" ? "cancel" : "end", callId: i.id });
+    void finish(false);
+    await Promise.race([signal, new Promise((resolve) => window.setTimeout(resolve, 1200))]);
+  }, [send, finish]);
+  useEffect(() => {
+    const task = async () => { await leaveCall(); };
+    beforeLogout.add(task);
+    // Capture runs before the realtime client closes its connection on the same event.
+    const onHide = () => void leaveCall();
+    window.addEventListener("pagehide", onHide, { capture: true });
+    return () => {
+      beforeLogout.delete(task);
+      window.removeEventListener("pagehide", onHide, { capture: true });
+    };
+  }, [leaveCall]);
+
   // Get the relay list ready before the first call, and unlock sound on the first tap
   // (iPhones keep the ringtone silent until the page has been touched).
   useEffect(() => {
@@ -561,6 +626,11 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     if (remoteAudio.current) remoteAudio.current.volume = loud ? 1 : 0.35;
   }, [loud, phase]);
 
+  const onRemoteSize = (e: { currentTarget: HTMLVideoElement }) => {
+    const v = e.currentTarget;
+    if (v.videoWidth && v.videoHeight) setRemoteLandscape(v.videoWidth > v.videoHeight * 1.1);
+  };
+
   const enablePlayback = () => {
     const player = info?.video ? remoteVid.current : remoteAudio.current;
     if (player) player.muted = false;
@@ -581,7 +651,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     const previous = facing.current;
     const next = previous === "user" ? "environment" : "user";
     const open = async (mode: "user" | "environment") =>
-      (await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } })).getVideoTracks()[0];
+      (await navigator.mediaDevices.getUserMedia({ video: cameraConstraints(mode) })).getVideoTracks()[0];
     // Most phones cannot open the second camera while the first is still on.
     stream.getVideoTracks().forEach((t) => { t.stop(); stream.removeTrack(t); });
     let track: MediaStreamTrack | undefined;
@@ -652,7 +722,9 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   };
 
   const showVideo = info?.video && phase !== "incoming";
-  const statusText = phase === "incoming" ? `Incoming ${info?.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : phase === "connecting" ? "Connecting…" : fmtDur(elapsed);
+  // While reconnecting the last frame freezes or goes black, so show the photo and status instead.
+  const remoteShown = !!showVideo && hasRemoteVideo && !reconnecting;
+  const statusText = phase === "incoming" ? `Incoming ${info?.video ? "video" : "voice"} call` : phase === "outgoing" ? "Ringing…" : phase === "connecting" ? "Connecting…" : reconnecting ? "Reconnecting…" : fmtDur(elapsed);
   const miniH = info?.video ? `calc(${MINI_W} * 1.6)` : "9.5rem";
   // Stable value so chat screens don't re-render on every call-timer tick.
   const busy = phase !== "idle";
@@ -678,18 +750,18 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         >
           {!info.video && <audio ref={remoteAudio} autoPlay />}
           <div className="relative min-h-0 flex-1 overflow-hidden">
-            <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full", maximized ? "object-contain" : "object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
+            <video ref={remoteVid} autoPlay playsInline onLoadedMetadata={onRemoteSize} onResize={onRemoteSize} className={cn("absolute inset-0 h-full w-full", maximized || remoteLandscape ? "object-contain" : "object-cover", !(remoteShown) && "invisible")} />
             {showVideo && (
               <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 rounded-xl shadow-lg", maximized ? "h-auto w-28 sm:w-44" : "h-40 w-28 object-cover", camOff && "opacity-0", mirrored && "-scale-x-100", minimized && "hidden")} />
             )}
             {minimized ? (
               <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-10 text-center">
-                {!(showVideo && hasRemoteVideo) && <Avatar p={info.peer} size={44} />}
+                {!(remoteShown) && <Avatar p={info.peer} size={44} />}
                 <p className="mt-1 w-full truncate text-xs font-medium drop-shadow">{info.peer.display_name}</p>
                 <p className="text-[11px] opacity-75 drop-shadow">{statusText}</p>
               </div>
             ) : (
-              showVideo && hasRemoteVideo ? (
+              remoteShown ? (
                 <div className="pointer-events-none relative z-10 p-4">
                   <p className="font-semibold drop-shadow">{info.peer.display_name}</p>
                   <p className="text-xs opacity-80 drop-shadow">{statusText}</p>

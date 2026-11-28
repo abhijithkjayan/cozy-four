@@ -9,6 +9,9 @@ const IDLE_LOGOUT_TAPS_TO_DISABLE = 5;
 // Set paused=true while a call is running so a long call is not cut off.
 export const idleState = { paused: false, instagram: false };
 
+// Work that must finish while still signed in (for example telling the other phone a call ended).
+export const beforeLogout = new Set<() => Promise<void>>();
+
 const GLOBAL_LOGOUT_TOPIC = "app:global-logout";
 let globalLogoutChannel: ReturnType<typeof supabase.channel> | null = null;
 let globalLogoutReady = false;
@@ -75,6 +78,14 @@ export async function secureLogout(broadcastGlobally = false) {
   if (broadcastGlobally) await broadcastManualLogout();
   wipeLocalCaches();
   try { sessionStorage.clear(); } catch {}
+  try {
+    await Promise.race([
+      Promise.allSettled([...beforeLogout].map((task) => task())),
+      new Promise<void>((resolve) => window.setTimeout(resolve, 1500)),
+    ]);
+  } catch {
+    // logging out matters more
+  }
   // Mark offline while still signed in. After sign-out the database refuses the update, the account
   // looked online for another minute, and Telegram alerts for messages sent in that minute were skipped.
   try {
