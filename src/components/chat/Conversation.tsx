@@ -1,7 +1,7 @@
 import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import { ArrowLeft, Check, CheckCheck, ChevronDown, Clock3, Download, Forward, Image as ImageIcon, Images, Info, ListChecks, Link2, MapPin, MoreVertical, Pencil, Phone, Pin, PinOff, PhoneMissed, Reply, Search, Send, Share, Smile, Sticker, Trash2, Video, X } from "lucide-react";
-import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, signedUrl } from "@/lib/supabase";
+import { supabase, type Message, type Profile, bus, emitMsg, pairFilter, presign, signedUrl } from "@/lib/supabase";
 import { dayLabel, fmtTime, lastSeen } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Avatar } from "./Avatar";
@@ -10,7 +10,7 @@ import { sendTelegramAlert, shareToTelegram, WATCHED_USER_ID } from "@/lib/teleg
 import { compressForChat, fitMediaToSize, needsChatCompression } from "@/lib/media-compress";
 import { downloadFile, saveWithPicker } from "@/lib/save-file";
 import { TELEGRAM_TARGET_BYTES } from "@/lib/telegram-media";
-import { AudioPlayer, ImageThumb, useSigned, VideoPlayer } from "./Media";
+import { AudioPlayer, ImageThumb, useNearView, useSigned, VideoPlayer } from "./Media";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { GiphyPicker, type PickedGif } from "./GiphyPicker";
 import { MediaEditor } from "./MediaEditor";
@@ -97,6 +97,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   // Messages that arrived live, so only they get the slide-in animation
   const freshIds = useRef(new Set<string>());
   const [msgs, setMsgs] = useState<Message[]>([]);
+  const msgsRef = useRef<Message[]>([]);
+  msgsRef.current = msgs;
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Pinned messages for this chat (shared by both people), newest pin first
   const [pins, setPins] = useState<Message[]>([]);
@@ -135,6 +137,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const [uploadStatus, setUploadStatus] = useState("");
   const [sendOriginal, setSendOriginal] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
   const keepBottom = useRef(true);
   const prevHeight = useRef<number | null>(null);
   const typingCh = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -299,15 +302,39 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     onSeen(peer.id);
   }, [peer.id, me.id, me.read_receipts_enabled, onSeen]);
 
+  const loadReactions = useCallback(async (ids: string[]) => {
+    // In batches: hundreds of ids in one request make its address too long.
+    for (let i = 0; i < ids.length; i += 100) {
+      const batch = ids.slice(i, i + 100);
+      const { data: reactionRows, error: reactionError } = await supabase.from("message_reactions").select("*").in("message_id", batch);
+      if (reactionError) {
+        console.error("Could not load message reactions:", reactionError);
+        return;
+      }
+      setReactions((current) => [...current.filter((reaction) => !batch.includes(reaction.message_id)), ...(reactionRows ?? [])]);
+    }
+  }, []);
+
   const load = useCallback(async (before?: string) => {
     if (loadingRef.current) return;
     loadingRef.current = true;
     setLoading(true);
-    let q = supabase.from("messages").select("*").or(pairFilter(me.id, peer.id)).order("created_at", { ascending: false }).limit(PAGE);
+    // Messages already deleted for me are left out by the database, so a page is a full page of
+    // real messages (a cleared chat used to load page after page of hidden ones).
+    let q = supabase.from("messages").select("*").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`).order("created_at", { ascending: false }).limit(PAGE);
     if (before) q = q.lt("created_at", before);
-    const { data } = await q;
+    const { data, error } = await q;
+    if (error) {
+      console.error("Could not load messages:", error);
+      loadingRef.current = false;
+      setLoading(false);
+      if (!before) toast.error("Could not load this chat. Check your connection.");
+      return;
+    }
     const rows = ((data ?? []) as Message[]).reverse();
     setHasMore(rows.length === PAGE);
+    // One request signs every photo, video and voice note on this page.
+    void presign(rows.flatMap((row) => (row.media_url && !row.view_once ? [row.media_url] : [])));
     if (before && scroller.current) prevHeight.current = scroller.current.scrollHeight;
     if (!before && !unreadHandled.current) {
       unreadHandled.current = true;
@@ -325,21 +352,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     // Ready for the next page straight away; reactions fill in afterwards.
     loadingRef.current = false;
     setLoading(false);
-    if (rows.length) {
-      const ids = rows.map((message) => message.id);
-      const { data: reactionRows, error: reactionError } = await supabase
-        .from("message_reactions")
-        .select("*")
-        .in("message_id", ids);
-      if (reactionError) {
-        console.error("Could not load message reactions:", reactionError);
-      } else {
-        setReactions((current) => [
-          ...current.filter((reaction) => !ids.includes(reaction.message_id)),
-          ...(reactionRows ?? []),
-        ]);
-      }
-    }
+    await loadReactions(rows.map((message) => message.id));
     // eslint-disable-next-line react-hooks/exhaustive-deps -- unreadCount is fixed for the life of this chat view
   }, [me.id, peer.id]);
 
@@ -377,6 +390,22 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     bus.addEventListener("msg", on);
     return () => bus.removeEventListener("msg", on);
   }, [peer.id, me.id, markRead]);
+
+  // After the live connection drops and comes back, fetch what was missed while it was down.
+  useEffect(() => {
+    const resync = async () => {
+      const { data } = await supabase.from("messages").select("*").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`).order("created_at", { ascending: false }).limit(PAGE);
+      const known = new Map(msgsRef.current.map((m) => [m.id, m]));
+      for (const row of ((data ?? []) as Message[]).reverse()) {
+        const old = known.get(row.id);
+        const changed = !old || old.status !== row.status || old.content !== row.content || old.deleted_for_everyone !== row.deleted_for_everyone || old.pinned_at !== row.pinned_at || old.view_once_opened_at !== row.view_once_opened_at;
+        if (changed) emitMsg(row);
+      }
+    };
+    const run = () => void resync();
+    bus.addEventListener("resync", run);
+    return () => bus.removeEventListener("resync", run);
+  }, [me.id, peer.id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -451,15 +480,32 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     } else if (keepBottom.current) el.scrollTop = el.scrollHeight;
   }, [msgs]);
 
+  // Photos finishing loading, the typing dots and the keyboard opening all change heights without
+  // any new message. While the user is at the bottom, stay there.
+  useEffect(() => {
+    const el = scroller.current;
+    const inner = content.current;
+    if (!el || !inner || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (keepBottom.current && !pendingScrollId.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(inner);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
   const onScroll = () => {
     const el = scroller.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    // Follow the newest message only while the user is actually at the bottom. This used to change
+    // only when a message arrived, so a tick, an edit or a delete while reading older messages
+    // jumped the chat to the bottom.
+    keepBottom.current = fromBottom < 150;
     // Start fetching older messages well before the top so scrolling up doesn't stall.
-    if (el && el.scrollTop < Math.max(600, el.clientHeight * 1.5) && hasMore && !loadingRef.current && msgs.length) void load(msgs[0]!.created_at);
-    if (el) {
-      const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-      setShowDown(fromBottom > 300);
-      if (fromBottom < 150) setNewBelow(0);
-    }
+    if (el.scrollTop < Math.max(600, el.clientHeight * 1.5) && hasMore && !loadingRef.current && msgs.length) void load(msgs[0]!.created_at);
+    setShowDown(fromBottom > 300);
+    if (fromBottom < 150) setNewBelow(0);
   };
 
   const scrollToBottom = () => {
@@ -502,19 +548,49 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
     setSearchResults((data ?? []) as Message[]);
   };
 
+  // Jumping to an older message (search, pin, gallery) loads everything between it and the messages
+  // already shown. Inserting only that one message left a silent gap in the middle of the chat.
+  const loadBackTo = async (target: Message) => {
+    if (loadingRef.current) return false;
+    loadingRef.current = true;
+    setLoading(true);
+    const older: Message[] = [];
+    let before = msgsRef.current[0]?.created_at ?? new Date(Date.now() + 60_000).toISOString();
+    let reached = false;
+    for (let page = 0; page < 4 && !reached; page++) {
+      const { data, error } = await supabase.from("messages").select("*").or(pairFilter(me.id, peer.id)).not("deleted_for", "cs", `{${me.id}}`).lt("created_at", before).gte("created_at", target.created_at).order("created_at", { ascending: false }).limit(500);
+      if (error) break;
+      const rows = (data ?? []) as Message[];
+      older.push(...rows);
+      if (rows.length < 500) reached = true;
+      else before = rows[rows.length - 1]!.created_at;
+    }
+    loadingRef.current = false;
+    setLoading(false);
+    if (!reached) {
+      toast("That message is too far back to jump to. Scroll up to reach it.");
+      return false;
+    }
+    older.reverse();
+    keepBottom.current = false;
+    pendingScrollId.current = target.id;
+    void presign(older.flatMap((row) => (row.media_url && !row.view_once ? [row.media_url] : [])));
+    setMsgs((current) => {
+      const have = new Set(current.map((item) => item.id));
+      return [...older.filter((item) => !have.has(item.id)), ...current];
+    });
+    void loadReactions(older.map((item) => item.id));
+    return true;
+  };
+
   const openSearchResult = (message: Message) => {
+    setSearchOpen(false);
     if (msgs.some((item) => item.id === message.id)) {
       messageElements.current.get(message.id)?.scrollIntoView({ block: "center" });
-      setSearchOpen(false);
+      flashMessage(message.id);
       return;
     }
-    keepBottom.current = false;
-    pendingScrollId.current = message.id;
-    setMsgs((current) => {
-      const next = current.some((item) => item.id === message.id) ? current : [...current, message];
-      return next.sort((a, b) => a.created_at.localeCompare(b.created_at));
-    });
-    setSearchOpen(false);
+    void loadBackTo(message).then((ok) => { if (ok) flashMessage(message.id); });
   };
 
   const openGallery = async () => {
@@ -873,12 +949,10 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
   const jumpToPinned = (message: Message) => {
     if (msgs.some((item) => item.id === message.id)) {
       messageElements.current.get(message.id)?.scrollIntoView({ block: "center", behavior: "smooth" });
+      flashMessage(message.id);
     } else {
-      keepBottom.current = false;
-      pendingScrollId.current = message.id;
-      setMsgs((current) => [...current, message].sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      void loadBackTo(message).then((ok) => { if (ok) flashMessage(message.id); });
     }
-    flashMessage(message.id);
   };
 
   // What someone sends to Alpha stays readable for Alpha after the sender deletes it.
@@ -1188,7 +1262,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
           <button disabled={!sel.size} onClick={() => setConfirm("delete")} className="flex h-11 w-11 items-center justify-center rounded-full text-destructive active:bg-muted disabled:opacity-30" aria-label="Delete"><Trash2 className="h-5 w-5" /></button>
         </header>
       ) : (
-      <header className="box-content flex h-16 shrink-0 items-center gap-2 border-b bg-card px-2 pt-[env(safe-area-inset-top)] md:gap-3 md:px-4">
+      <header className="box-content flex h-16 shrink-0 items-center gap-1 border-b bg-card px-2 pt-[env(safe-area-inset-top)] md:gap-3 md:px-4">
         <button onClick={onBack} className="flex h-11 w-11 items-center justify-center rounded-full active:bg-muted md:hidden" aria-label="Back"><ArrowLeft className="h-5 w-5" /></button>
         <button type="button" onClick={() => onViewProfile(peer)} className="flex min-w-0 flex-1 items-center gap-2 rounded-md text-left hover:bg-muted/50" aria-label={`View ${peer.display_name}'s profile and login activity`}>
           <Avatar
@@ -1203,13 +1277,14 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             <span className={cn("block line-clamp-1 text-xs leading-4", typing ? "text-primary" : "text-muted-foreground")}>{status}</span>
           </span>
         </button>
-        {canNudge && <button type="button" disabled={nudgeCooldown} onClick={sendNudge} className="flex h-11 w-11 items-center justify-center rounded-full text-lg active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label={nudgeCooldown ? "Nudge sent" : `Nudge ${peer.display_name}`} title={nudgeCooldown ? "Nudge sent" : "Send a nudge"}>🚨</button>}
-        <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
-        <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
-        <button onClick={() => void openGallery()} className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Shared media gallery" title="Shared media, audio and links"><Images className="h-5 w-5" /></button>
+        {canNudge && <button type="button" disabled={nudgeCooldown} onClick={sendNudge} className="flex h-10 w-10 items-center md:h-11 md:w-11 justify-center rounded-full text-lg active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label={nudgeCooldown ? "Nudge sent" : `Nudge ${peer.display_name}`} title={nudgeCooldown ? "Nudge sent" : "Send a nudge"}>🚨</button>}
+        <button disabled={busy} onClick={() => startCall(peer, true)} className="flex h-10 w-10 items-center md:h-11 md:w-11 justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Video call"><Video className="h-5 w-5" /></button>
+        <button disabled={busy} onClick={() => startCall(peer, false)} className="flex h-10 w-10 items-center md:h-11 md:w-11 justify-center rounded-full text-muted-foreground active:bg-muted disabled:opacity-40 md:hover:bg-muted" aria-label="Voice call"><Phone className="h-5 w-5" /></button>
+        <button onClick={() => void openGallery()} className="hidden h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:flex md:hover:bg-muted" aria-label="Shared media gallery" title="Shared media, audio and links"><Images className="h-5 w-5" /></button>
         <DropdownMenu>
-          <DropdownMenuTrigger className="flex h-11 w-11 items-center justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Chat menu"><MoreVertical className="h-5 w-5" /></DropdownMenuTrigger>
+          <DropdownMenuTrigger className="flex h-10 w-10 items-center md:h-11 md:w-11 justify-center rounded-full text-muted-foreground active:bg-muted md:hover:bg-muted" aria-label="Chat menu"><MoreVertical className="h-5 w-5" /></DropdownMenuTrigger>
           <DropdownMenuContent align="end">
+            <DropdownMenuItem className="md:hidden" onClick={() => void openGallery()}><Images className="mr-2 h-4 w-4" />Media, audio and links</DropdownMenuItem>
             <DropdownMenuItem onClick={() => { setSearchQuery(""); setSearchResults([]); setSearchOpen(true); }}><Search className="mr-2 h-4 w-4" />Search messages</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setSel(new Set())}><ListChecks className="mr-2 h-4 w-4" />Select messages</DropdownMenuItem>
             <DropdownMenuItem onClick={() => setConfirm("clear")} className="text-destructive"><Trash2 className="mr-2 h-4 w-4" />Clear chat</DropdownMenuItem>
@@ -1251,7 +1326,8 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
 
       <div className="relative min-h-0 flex-1">
       {loading && hasMore && msgs.length > 0 && <div className="pointer-events-none absolute inset-x-0 top-2 z-10 mx-auto w-fit rounded-full bg-card/90 px-3 py-1 text-xs text-muted-foreground shadow">Loading…</div>}
-      <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 md:px-[8%]">
+      <div ref={scroller} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden overscroll-contain px-3 py-4 [overflow-anchor:none] md:px-[8%]">
+        <div ref={content}>
         {rows.map(({ m, day, first }) => (
           <MessageRow
             key={m.id}
@@ -1282,6 +1358,7 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             </div>
           </div>
         )}
+        </div>
       </div>
       {(showDown || newBelow > 0) && (
         <button
@@ -1334,7 +1411,6 @@ export const Conversation = memo(function Conversation({ me, peer, online, away,
             const touch = window.matchMedia("(pointer: coarse)").matches;
             if (e.key === "Enter" && !e.shiftKey && !touch) { e.preventDefault(); sendText(); }
           }}
-          onFocus={() => setTimeout(() => { const el = scroller.current; if (el) el.scrollTop = el.scrollHeight; }, 300)}
           enterKeyHint="enter"
           autoCapitalize="sentences"
           rows={1}
@@ -1984,7 +2060,7 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
               null
             ) : (m.type === "gif" || m.type === "sticker") && attachment?.url ? (
               <button onClick={() => actions.openViewer(attachment.url!)} className="block overflow-hidden rounded-lg" aria-label={`View ${m.type}`}>
-                <img src={attachment.url} alt={attachment.title || m.type} className="max-h-72 max-w-64 object-cover" />
+                <img src={attachment.url} alt={attachment.title || m.type} loading="lazy" decoding="async" className="h-56 w-56 max-w-full object-contain" />
               </button>
             ) : jumbo ? (
               <p className="px-1 text-5xl leading-tight">{m.content?.trim()}</p>
@@ -2020,8 +2096,10 @@ const MessageRow = memo(function MessageRow({ m, day, first, fresh, unreadLabel,
 
 /** Square gallery tile that fills its cell; videos show their first frame with a play badge. */
 function GalleryThumb({ path, video }: { path: string; video: boolean }) {
-  const url = useSigned(path);
-  if (!url) return <span className="block h-full w-full animate-pulse bg-muted" />;
+  // The gallery can hold hundreds of items: sign and load each one only when it scrolls into view.
+  const [ref, near] = useNearView<HTMLSpanElement>();
+  const url = useSigned(path, near);
+  if (!url) return <span ref={ref} className="block h-full w-full animate-pulse bg-muted" />;
   if (!video) return <img src={url} alt="Photo" loading="lazy" className="h-full w-full object-cover" />;
   return (
     <>

@@ -3,8 +3,8 @@ import type { RealtimeChannel } from "@supabase/supabase-js";
 import { Expand, Maximize2, Mic, MicOff, Minimize2, Phone, PhoneOff, RefreshCcw, Shrink, Video, VideoOff, Volume2, Volume1 } from "lucide-react";
 import { toast } from "sonner";
 import { supabase, type Profile, emitMsg, type Message } from "@/lib/supabase";
-import { loadIceServers } from "@/lib/ice";
-import { startRing, stopRing, notify } from "@/lib/tones";
+import { ICE_SERVERS, loadIceConfig, warmIceConfig } from "@/lib/ice";
+import { startRing, stopRing, notify, primeAudio } from "@/lib/tones";
 import { fmtDur } from "@/lib/format";
 import { idleState } from "@/lib/security";
 import { sendTelegramAlert, WATCHED_USER_ID } from "@/lib/telegram.functions";
@@ -65,7 +65,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const startedAt = useRef<number | null>(null);
   const timeout = useRef<number | undefined>(undefined);
   const facing = useRef<"user" | "environment">("user");
-  const channels = useRef(new Map<string, Promise<RealtimeChannel>>());
+  const [mirrored, setMirrored] = useState(true);
+  const channels = useRef(new Map<string, RealtimeChannel>());
+  const relayAvailable = useRef(false);
+  const restartSdp = useRef<string | null>(null);
   const localVid = useRef<HTMLVideoElement>(null);
   const remoteVid = useRef<HTMLVideoElement>(null);
   const remoteAudio = useRef<HTMLAudioElement>(null);
@@ -75,33 +78,40 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   const setP = (p: Phase) => { phaseRef.current = p; setPhase(p); };
   const setI = (i: Info | null) => { infoRef.current = i; setInfo(i); };
 
-  const send = useCallback(async (to: string, s: Omit<Sig, "from">) => {
-    let ch = channels.current.get(to);
-    if (!ch) {
-      ch = new Promise<RealtimeChannel>((res, rej) => {
-        const c = supabase.channel(`call:${to}`, { config: { broadcast: { ack: true } } });
-        c.subscribe((st) => {
-          if (st === "SUBSCRIBED") res(c);
-          else if (st === "CHANNEL_ERROR" || st === "TIMED_OUT" || st === "CLOSED") {
-            channels.current.delete(to);
-            supabase.removeChannel(c);
-            rej(new Error(st));
-          }
-        });
-      });
-      channels.current.set(to, ch);
+  // One lasting channel per person we signal. It is never removed while signed in: the realtime
+  // client rejoins it by itself after a network drop, and send() goes over HTTP while it is not
+  // joined. (Removing it from its own status callback re-entered itself, and a new send could be
+  // handed the old channel, whose subscribe() never reports back: signals then stopped for good.)
+  const outChannel = useCallback((to: string) => {
+    let c = channels.current.get(to);
+    if (!c) {
+      c = supabase.channel(`call:${to}`, { config: { broadcast: { ack: true } } });
+      c.subscribe();
+      channels.current.set(to, c);
+    }
+    return c;
+  }, []);
+
+  // Delivers one signal. Returns false when it could not be handed to the server.
+  // A signal may arrive twice (socket and HTTP); every kind is safe to receive twice.
+  const send = useCallback(async (to: string, s: Omit<Sig, "from">): Promise<boolean> => {
+    const payload = { ...s, from: me.id };
+    const c = outChannel(to);
+    try {
+      // Joined: over the socket, confirmed by the server. Not joined: the library posts it over HTTP.
+      if ((await c.send({ type: "broadcast", event: "signal", payload }, { timeout: 4000 })) === "ok") return true;
+    } catch {
+      // fall through to HTTP
     }
     try {
-      (await ch).send({ type: "broadcast", event: "signal", payload: { ...s, from: me.id } });
-    } catch {
-      // Channel failed; retry once on a fresh channel
-      channels.current.delete(to);
-      const c = supabase.channel(`call:${to}`);
-      await new Promise<void>((res) => c.subscribe((st) => st === "SUBSCRIBED" && res()));
-      channels.current.set(to, Promise.resolve(c));
-      c.send({ type: "broadcast", event: "signal", payload: { ...s, from: me.id } });
+      // The socket looked open but did not answer (a phone that just woke up): post over HTTP.
+      await c.httpSend("signal", payload, { timeout: 4000 });
+      return true;
+    } catch (error) {
+      console.warn(`[call] could not deliver the "${s.kind}" signal:`, error);
+      return false;
     }
-  }, [me.id]);
+  }, [me.id, outChannel]);
 
   const cleanup = useCallback(() => {
     stopRing();
@@ -115,10 +125,12 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     local.current = null;
     remote.current = null;
     pendingIce.current = [];
+    restartSdp.current = null;
+    facing.current = "user";
     startedAt.current = null;
     if (remoteVid.current) { remoteVid.current.srcObject = null; remoteVid.current.muted = false; }
     if (remoteAudio.current) { remoteAudio.current.srcObject = null; remoteAudio.current.muted = false; }
-    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false); setMaximized(false);
+    setMuted(false); setCamOff(false); setLoud(true); setHasRemoteVideo(false); setPlaybackBlocked(false); setElapsed(0); setMinimized(false); setMaximized(false); setMirrored(true);
     leaveFullscreen();
     setI(null);
     setP("idle");
@@ -145,6 +157,38 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cleanup, send]);
 
+  const failNotice = () => {
+    toast.error(
+      relayAvailable.current
+        ? "Call could not connect. Check the internet connection on both phones and try again."
+        : "Call could not connect. No relay server is set up, so calls over mobile data or strict Wi-Fi fail.",
+    );
+  };
+
+  // Ends a call that lost or never found its connection, and says why.
+  const giveUp = () => {
+    if (!infoRef.current) return;
+    if (startedAt.current) toast.error("Call ended: the connection was lost.");
+    else failNotice();
+    void finish(true);
+  };
+
+  // Records how the call connected (direct or through the relay): the first thing to check when calls fail.
+  const logRoute = async (p: RTCPeerConnection) => {
+    try {
+      const stats = await p.getStats();
+      stats.forEach((report) => {
+        if (report.type !== "candidate-pair" || report.state !== "succeeded" || !report.nominated) return;
+        const localType = stats.get(report.localCandidateId)?.candidateType;
+        const remoteType = stats.get(report.remoteCandidateId)?.candidateType;
+        const relayed = localType === "relay" || remoteType === "relay";
+        console.info(`[call] connected: local ${localType}, remote ${remoteType} (${relayed ? "through the relay" : "direct"})`);
+      });
+    } catch {
+      // diagnostics only
+    }
+  };
+
   const attachRemote = (player: HTMLMediaElement | null) => {
     if (!player || !remote.current) return;
     // Setting srcObject again, even to the same stream, restarts loading and aborts the pending play()
@@ -159,37 +203,74 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   };
 
   const buildPc = async (i: Info) => {
-    const iceServers = await loadIceServers();
+    const ice = await loadIceConfig();
     // The call may have ended while the relay list was loading
     if (infoRef.current?.id !== i.id) return null;
-    const p = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 4 });
+    relayAvailable.current = ice.relay;
+    let p: RTCPeerConnection;
+    try {
+      p = new RTCPeerConnection({ iceServers: ice.servers, iceCandidatePoolSize: 4 });
+    } catch (error) {
+      // A bad relay address must not stop every call: fall back to direct connections.
+      console.error("[call] the browser rejected the relay configuration:", error);
+      relayAvailable.current = false;
+      p = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    }
     remote.current = new MediaStream();
-    p.onicecandidate = (e) => e.candidate && send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
+    p.onicecandidate = (e) => {
+      if (e.candidate) void send(i.peer.id, { kind: "ice", callId: i.id, cand: e.candidate.toJSON() });
+    };
     p.ontrack = (e) => {
-      if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
+      // Use the browser's own stream when it gives one: Safari does not show a track that is
+      // added later to a stream it is already playing.
+      const stream = e.streams[0];
+      if (stream) remote.current = stream;
+      else if (!remote.current!.getTrackById(e.track.id)) remote.current!.addTrack(e.track);
       if (e.track.kind === "video") setHasRemoteVideo(true);
       attachRemote(i.video ? remoteVid.current : remoteAudio.current);
     };
     let dropTimer: number | undefined;
-    let restarted = false;
+    let restarts = 0;
+    const giveUpIfDown = (ms: number) => {
+      clearTimeout(dropTimer);
+      dropTimer = window.setTimeout(() => {
+        if (pc.current === p && p.connectionState !== "connected") giveUp();
+      }, ms);
+    };
+    // Look for a new route. Only the caller re-offers, so two restarts can never cross.
+    const restart = () => {
+      if (i.role !== "caller" || restarts >= 3 || pc.current !== p || p.signalingState !== "stable") return;
+      restarts++;
+      void p
+        .createOffer({ iceRestart: true })
+        .then(async (o) => {
+          await p.setLocalDescription(o);
+          const sendRestart = () => void send(i.peer.id, { kind: "offer", callId: i.id, restart: true, sdp: p.localDescription?.toJSON() ?? o });
+          sendRestart();
+          // Repeat until answered, like the first offer. The "answer" handler stops it.
+          clearInterval(resend.current);
+          resend.current = window.setInterval(() => {
+            if (pc.current === p && p.signalingState === "have-local-offer") sendRestart();
+            else clearInterval(resend.current);
+          }, 2500);
+        })
+        .catch((error) => console.warn("[call] could not restart the connection:", error));
+    };
     const onState = () => {
-      const c = p.connectionState, ice = p.iceConnectionState;
-      if (c === "connected" || ice === "connected" || ice === "completed") {
+      const c = p.connectionState, iceState = p.iceConnectionState;
+      if (c === "connected" || iceState === "connected" || iceState === "completed") {
         clearTimeout(dropTimer);
         goActive();
-      } else if (c === "failed" || ice === "failed") {
-        // Try once to find a new route before giving up. Only the caller re-offers, so restarts can't cross.
-        if (i.role === "caller" && !restarted) {
-          restarted = true;
-          void p.createOffer({ iceRestart: true })
-            .then(async (o) => { await p.setLocalDescription(o); send(i.peer.id, { kind: "offer", callId: i.id, restart: true, sdp: o }); })
-            .catch(() => {});
-        }
-        clearTimeout(dropTimer);
-        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 20000);
-      } else if (c === "disconnected" || ice === "disconnected") {
-        clearTimeout(dropTimer);
-        dropTimer = window.setTimeout(() => { if (pc.current === p && p.connectionState !== "connected") finish(true); }, 15000);
+        void logRoute(p);
+      } else if (c === "failed" || iceState === "failed") {
+        restart();
+        giveUpIfDown(20000);
+      } else if (c === "disconnected" || iceState === "disconnected") {
+        // Often a change of network (Wi-Fi to mobile data): try a new route after a short wait.
+        window.setTimeout(() => {
+          if (pc.current === p && p.iceConnectionState === "disconnected") restart();
+        }, 3000);
+        giveUpIfDown(20000);
       }
     };
     p.onconnectionstatechange = onState;
@@ -230,18 +311,21 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     // Media can start flowing before this runs; don't drop back to "Connecting…" and its hang-up timer
     if (startedAt.current) return;
     setP("connecting");
-    timeout.current = window.setTimeout(() => finish(true), 45000);
+    timeout.current = window.setTimeout(giveUp, 45000);
   };
 
   const startCall = useCallback(async (peer: Profile, video: boolean) => {
     if (phaseRef.current !== "idle" || starting.current) return;
     starting.current = true;
+    // The permission prompt can cover the page for a while; that must not count as leaving the app.
+    idleState.paused = true;
     let stream: MediaStream;
     try {
       stream = await getMedia(video);
     } catch {
       starting.current = false;
-      alert("Camera/microphone permission is needed to call.");
+      idleState.paused = phaseRef.current !== "idle";
+      toast.error(video ? "Allow the camera and microphone to make a video call." : "Allow the microphone to make a call.");
       return;
     }
     const { data } = await supabase.from("calls").insert({ caller_id: me.id, receiver_id: peer.id, type: video ? "video" : "voice" }).select().single();
@@ -260,6 +344,12 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     setI(i);
     setP("outgoing");
     setCamOff(false);
+    startRing(true);
+    // Set before the connection is prepared, so a call that cannot even be set up still ends by itself.
+    timeout.current = window.setTimeout(() => {
+      if (phaseRef.current === "outgoing") toast(`${peer.display_name} did not answer`);
+      void finish(true);
+    }, 35000);
     try {
       const p = await buildPc(i);
       if (!p) return;
@@ -268,13 +358,13 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       if (pc.current !== p) return;
       // Signals are fire-and-forget, so keep offering until answered. A phone waking up still gets the call.
       // Repeats use their own kind: an app copy from before repeats existed answers a second "offer" with "busy".
-      const sendOffer = (kind: "offer" | "reoffer") => send(peer.id, { kind, callId: i.id, video, ts: i.ts!, sdp: p.localDescription?.toJSON() ?? offer });
+      const sendOffer = (kind: "offer" | "reoffer") => void send(peer.id, { kind, callId: i.id, video, ts: i.ts!, sdp: p.localDescription?.toJSON() ?? offer });
       sendOffer("offer");
       resend.current = window.setInterval(() => sendOffer("reoffer"), 2500);
-      startRing(true);
-      timeout.current = window.setTimeout(() => finish(true), 35000);
-    } catch {
-      finish(true);
+    } catch (error) {
+      console.error("[call] could not start the call:", error);
+      toast.error("Could not start the call. Please try again.");
+      void finish(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.id, send, finish]);
@@ -289,7 +379,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     try {
       stream = await getMedia(i.video);
     } catch {
-      alert("Camera/microphone permission is needed.");
+      toast.error(i.video ? "Allow the camera and microphone to answer." : "Allow the microphone to answer.");
       return decline();
     }
     // The caller may have hung up during the permission prompt
@@ -306,10 +396,12 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
       const ans = await p.createAnswer();
       await p.setLocalDescription(ans);
       if (infoRef.current?.id !== i.id) return;
-      send(i.peer.id, { kind: "answer", callId: i.id, sdp: ans });
+      void send(i.peer.id, { kind: "answer", callId: i.id, sdp: p.localDescription?.toJSON() ?? ans });
       beginConnecting();
-    } catch {
-      finish(true);
+    } catch (error) {
+      console.error("[call] could not answer the call:", error);
+      toast.error("Could not answer the call.");
+      void finish(true);
     }
   };
 
@@ -321,7 +413,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
 
   // Incoming signalling
   useEffect(() => {
-    const onSignal = async ({ payload }: { payload: unknown }) => {
+    const handleSignal = async ({ payload }: { payload: unknown }) => {
       const s = payload as Sig;
       const cur = infoRef.current;
       // A repeated offer still in flight must not ring a call that already ended
@@ -332,10 +424,16 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
           // A repeat carries every route found so far, so answering it survives lost "ice" messages
           if (!conn && s.sdp && cur.role === "callee") cur.offer = s.sdp;
           if (s.restart && conn) {
+            // A repeat of a restart we already answered: just answer again.
+            if (restartSdp.current === s.sdp?.sdp && conn.signalingState === "stable" && conn.localDescription?.type === "answer") {
+              void send(s.from, { kind: "answer", callId: s.callId, sdp: conn.localDescription.toJSON() });
+              return;
+            }
+            restartSdp.current = s.sdp?.sdp ?? null;
             await conn.setRemoteDescription(s.sdp!);
             const ans = await conn.createAnswer();
             await conn.setLocalDescription(ans);
-            send(s.from, { kind: "answer", callId: s.callId, sdp: ans });
+            void send(s.from, { kind: "answer", callId: s.callId, sdp: conn.localDescription?.toJSON() ?? ans });
           } else if (conn?.localDescription?.type === "answer") {
             // Caller is still offering, so our answer got lost
             send(s.from, { kind: "answer", callId: s.callId, sdp: conn.localDescription.toJSON() });
@@ -347,7 +445,10 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         if (cur) {
           // Each called the other. Keep the first call; the other side's call yields to it.
           const crossed = cur.peer.id === s.from && cur.role === "caller" && phaseRef.current === "outgoing";
-          if (!crossed) return send(s.from, { kind: "busy", callId: s.callId });
+          if (!crossed) {
+            void send(s.from, { kind: "busy", callId: s.callId });
+            return;
+          }
           if (firstCallWins(cur, { id: s.callId, ts: s.ts })) return;
           // Both already chose to talk, so connect straight away unless it would turn the camera on unasked
           autoAccept = cur.video || !s.video;
@@ -405,36 +506,21 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
           break;
       }
     };
-    // Phones drop this connection when the app is in the background. Rejoin, or calls never reach us.
-    let ch: RealtimeChannel | null = null;
-    let stopped = false;
-    let retry: number | undefined;
-    const listen = () => {
-      const c = supabase.channel(`call:${me.id}`);
-      ch = c;
-      c.on("broadcast", { event: "signal" }, onSignal);
-      c.subscribe((st) => {
-        if (ch === c && st !== "SUBSCRIBED") rejoin(c, 2000);
-      });
+    const onSignal = (message: { payload: unknown }) => {
+      handleSignal(message).catch((error) => console.error("[call] could not handle a signal:", error));
     };
-    const rejoin = async (c: RealtimeChannel, delay: number) => {
-      ch = null;
-      await supabase.removeChannel(c).catch(() => {});
-      clearTimeout(retry);
-      retry = window.setTimeout(() => { if (!stopped) listen(); }, delay);
-    };
-    const wake = () => {
-      if (document.visibilityState === "visible" && ch && ch.state !== "joined" && ch.state !== "joining") rejoin(ch, 0);
-    };
-    listen();
-    document.addEventListener("visibilitychange", wake);
-    window.addEventListener("online", wake);
+    // One lasting channel. The realtime client rejoins it by itself after a network drop; removing
+    // and re-creating it here raced with that and could leave nobody listening for calls.
+    const ch = supabase.channel(`call:${me.id}`);
+    ch.on("broadcast", { event: "signal" }, onSignal);
+    ch.subscribe((st, error) => {
+      if (st === "CHANNEL_ERROR" || st === "TIMED_OUT") console.warn(`[call] listening channel ${st}; it rejoins by itself`, error ?? "");
+    });
+    const sending = channels.current;
     return () => {
-      stopped = true;
-      clearTimeout(retry);
-      document.removeEventListener("visibilitychange", wake);
-      window.removeEventListener("online", wake);
-      if (ch) supabase.removeChannel(ch);
+      void supabase.removeChannel(ch);
+      sending.forEach((c) => void supabase.removeChannel(c));
+      sending.clear();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.id]);
@@ -453,6 +539,14 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
   }, [phase]);
 
   useEffect(() => { idleState.paused = phase !== "idle"; return () => { idleState.paused = false; }; }, [phase]);
+
+  // Get the relay list ready before the first call, and unlock sound on the first tap
+  // (iPhones keep the ringtone silent until the page has been touched).
+  useEffect(() => {
+    warmIceConfig();
+    window.addEventListener("click", primeAudio, { once: true, capture: true });
+    return () => window.removeEventListener("click", primeAudio, { capture: true });
+  }, []);
 
   // Keep the phone screen awake during a call
   useEffect(() => {
@@ -482,16 +576,30 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     setCamOff(!camOff);
   };
   const switchCam = async () => {
-    facing.current = facing.current === "user" ? "environment" : "user";
+    const stream = local.current;
+    if (!stream) return;
+    const previous = facing.current;
+    const next = previous === "user" ? "environment" : "user";
+    const open = async (mode: "user" | "environment") =>
+      (await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } })).getVideoTracks()[0];
+    // Most phones cannot open the second camera while the first is still on.
+    stream.getVideoTracks().forEach((t) => { t.stop(); stream.removeTrack(t); });
+    let track: MediaStreamTrack | undefined;
+    let mode: "user" | "environment" = next;
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing.current } });
-      const nt = s.getVideoTracks()[0]; if (!nt) return;
-      const sender = pc.current?.getSenders().find((x) => x.track?.kind === "video");
-      await sender?.replaceTrack(nt);
-      local.current?.getVideoTracks().forEach((t) => { t.stop(); local.current!.removeTrack(t); });
-      local.current?.addTrack(nt);
-      if (localVid.current) localVid.current.srcObject = local.current;
-    } catch {}
+      track = await open(next);
+    } catch {
+      mode = previous;
+      toast.error("Could not switch the camera.");
+      try { track = await open(previous); } catch { /* no camera left */ }
+    }
+    if (!track) return;
+    track.enabled = !camOff;
+    stream.addTrack(track);
+    await pc.current?.getSenders().find((x) => x.track?.kind === "video")?.replaceTrack(track).catch(() => {});
+    facing.current = mode;
+    setMirrored(mode === "user");
+    if (localVid.current) localVid.current.srcObject = stream;
   };
 
   // Esc or the browser's own control can leave full screen too
@@ -572,7 +680,7 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
           <div className="relative min-h-0 flex-1 overflow-hidden">
             <video ref={remoteVid} autoPlay playsInline className={cn("absolute inset-0 h-full w-full", maximized ? "object-contain" : "object-cover", !(showVideo && hasRemoteVideo) && "invisible")} />
             {showVideo && (
-              <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 rounded-xl shadow-lg", maximized ? "h-auto w-28 sm:w-44" : "h-40 w-28 object-cover", camOff && "opacity-0", facing.current === "user" && "-scale-x-100", minimized && "hidden")} />
+              <video ref={localVid} autoPlay playsInline muted style={{ top: "max(1rem, env(safe-area-inset-top))" }} className={cn("absolute right-4 z-10 rounded-xl shadow-lg", maximized ? "h-auto w-28 sm:w-44" : "h-40 w-28 object-cover", camOff && "opacity-0", mirrored && "-scale-x-100", minimized && "hidden")} />
             )}
             {minimized ? (
               <div className="pointer-events-none relative z-10 flex h-full flex-col items-center justify-end px-2 pb-10 text-center">

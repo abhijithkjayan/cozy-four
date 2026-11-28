@@ -3,33 +3,71 @@ import { Pause, Play } from "lucide-react";
 import { signedUrl } from "@/lib/supabase";
 import { fmtDur } from "@/lib/format";
 
-export function useSigned(path: string | null) {
+/** True once the element has come into view; stays true afterwards. */
+export function useNearView<T extends Element>() {
+  const ref = useRef<T>(null);
+  const [near, setNear] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || near) return;
+    if (typeof IntersectionObserver === "undefined") {
+      setNear(true);
+      return;
+    }
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setNear(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [near]);
+  return [ref, near] as const;
+}
+
+/** The signed link for a stored file. With `enabled` false nothing is requested yet. */
+export function useSigned(path: string | null, enabled = true) {
   const [url, setUrl] = useState<string | null>(null);
   useEffect(() => {
-    if (!path) return;
+    if (!path || !enabled) return;
     let on = true;
     signedUrl(path).then((u) => on && setUrl(u));
     return () => { on = false; };
-  }, [path]);
+  }, [path, enabled]);
   return url;
 }
 
+// Photos and videos get their box from the start, so the chat does not jump when they finish loading.
+const MEDIA_BOX = "h-64 w-64 max-w-full overflow-hidden rounded-lg";
+
 export function ImageThumb({ path, onOpen }: { path: string; onOpen: (url: string) => void }) {
-  const url = useSigned(path);
-  return url ? (
-    <img
-      src={url}
-      alt="Photo"
-      onClick={() => onOpen(url)}
-      className="max-h-72 w-full max-w-64 cursor-pointer rounded-lg object-cover"
-    />
-  ) : (
-    <div className="h-48 w-56 animate-pulse rounded-lg bg-muted" />
+  const [ref, near] = useNearView<HTMLDivElement>();
+  const url = useSigned(path, near);
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <div ref={ref} className={`${MEDIA_BOX} bg-muted ${loaded ? "" : "animate-pulse"}`}>
+      {url && (
+        <img
+          src={url}
+          alt="Photo"
+          loading="lazy"
+          decoding="async"
+          onLoad={() => setLoaded(true)}
+          onClick={() => onOpen(url)}
+          className={`h-full w-full cursor-pointer object-cover transition-opacity duration-200 ${loaded ? "opacity-100" : "opacity-0"}`}
+        />
+      )}
+    </div>
   );
 }
 
 export function AudioPlayer({ path, duration, played, onPlayed }: { path: string; duration: number; played: boolean; onPlayed: () => void }) {
-  const url = useSigned(path);
+  const [box, near] = useNearView<HTMLDivElement>();
+  const url = useSigned(path, near);
   const ref = useRef<HTMLAudioElement>(null);
   const [playing, setPlaying] = useState(false);
   const [t, setT] = useState(0);
@@ -66,11 +104,12 @@ export function AudioPlayer({ path, duration, played, onPlayed }: { path: string
   };
 
   return (
-    <div className="flex w-60 items-center gap-3 py-1">
+    <div ref={box} className="flex w-60 items-center gap-3 py-1">
+      {/* The length comes with the message, so nothing is downloaded until Play is pressed. */}
       <audio
         ref={ref}
         src={url ?? undefined}
-        preload="metadata"
+        preload="none"
         onPlay={() => { setPlaying(true); onPlayed(); }}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setT(0); }}
@@ -107,10 +146,12 @@ export function AudioPlayer({ path, duration, played, onPlayed }: { path: string
 }
 
 export function VideoPlayer({ path }: { path: string }) {
-  const url = useSigned(path);
-  return url ? (
-    <video src={url} controls playsInline preload="metadata" className="max-h-80 w-full max-w-64 rounded-lg bg-muted" />
-  ) : (
-    <div className="h-48 w-56 animate-pulse rounded-lg bg-muted" />
+  const [ref, near] = useNearView<HTMLDivElement>();
+  const url = useSigned(path, near);
+  return (
+    <div ref={ref} className={`${MEDIA_BOX} bg-black/80 ${url ? "" : "animate-pulse"}`}>
+      {/* "#t=0.1" makes phones show the first frame instead of a black box. */}
+      {url && <video src={`${url}#t=0.1`} controls playsInline preload="metadata" className="h-full w-full object-contain" />}
+    </div>
   );
 }

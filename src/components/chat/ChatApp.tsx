@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Archive, ArchiveRestore, ArrowLeft, Bell, BellOff, Camera, ChevronDown, Instagram, LogOut, MessageSquare, Moon, MoreVertical, PhoneCall, Pin, PinOff, Sun, Trash2 } from "lucide-react";
-import { supabase, type Message, type Profile, emitMsg, bus, hideChatForMe, pairFilter } from "@/lib/supabase";
+import { supabase, type Message, type Profile, emitMsg, emitResync, bus, hideChatForMe, pairFilter } from "@/lib/supabase";
 import { listTime } from "@/lib/format";
 import { alertsMuted, messageTone, notificationsEnabled, notify, registerNotificationWorker, setNotificationsOff } from "@/lib/tones";
 import { cn } from "@/lib/utils";
@@ -167,6 +167,27 @@ export function ChatApp({ userId }: { userId: string }) {
     setDark(d);
   };
 
+  // Last message and unread count for every chat. Runs at the start and again whenever the live connection comes back.
+  const loadPreviews = useCallback(async (others: Profile[]) => {
+    const l: Record<string, Message | undefined> = {};
+    const u: Record<string, number> = {};
+    await Promise.all(
+      others.map(async (p) => {
+        const [{ data: m }, { count }] = await Promise.all([
+          supabase.from("messages").select("*").or(pairFilter(userId, p.id)).not("deleted_for", "cs", `{${userId}}`).order("created_at", { ascending: false }).limit(1),
+          supabase.from("messages").select("id", { count: "exact", head: true }).eq("sender_id", p.id).eq("receiver_id", userId).neq("status", "read").neq("type", "call"),
+        ]);
+        l[p.id] = (m?.[0] as Message) ?? undefined;
+        // The open chat is being read right now, so it has nothing unread.
+        u[p.id] = selRef.current === p.id && document.visibilityState === "visible" ? 0 : count ?? 0;
+      }),
+    );
+    setLast(l);
+    setUnread(u);
+    // mark everything received as delivered
+    supabase.from("messages").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("receiver_id", userId).eq("status", "sent").then();
+  }, [userId]);
+
   // Load profiles & previews
   useEffect(() => {
     (async () => {
@@ -180,24 +201,9 @@ export function ChatApp({ userId }: { userId: string }) {
       setPinned(new Set((savedPins ?? []).map((row) => row.peer_id)));
       const others = list.filter((p) => p.id !== userId);
       setPeers(others);
-      const l: Record<string, Message | undefined> = {};
-      const u: Record<string, number> = {};
-      await Promise.all(
-        others.map(async (p) => {
-          const [{ data: m }, { count }] = await Promise.all([
-            supabase.from("messages").select("*").or(pairFilter(userId, p.id)).not("deleted_for", "cs", `{${userId}}`).order("created_at", { ascending: false }).limit(1),
-            supabase.from("messages").select("id", { count: "exact", head: true }).eq("sender_id", p.id).eq("receiver_id", userId).neq("status", "read").neq("type", "call"),
-          ]);
-          l[p.id] = (m?.[0] as Message) ?? undefined;
-          u[p.id] = count ?? 0;
-        }),
-      );
-      setLast(l);
-      setUnread(u);
-      // mark everything received as delivered
-      supabase.from("messages").update({ status: "delivered", delivered_at: new Date().toISOString() }).eq("receiver_id", userId).eq("status", "sent").then();
+      await loadPreviews(others);
     })();
-  }, [userId]);
+  }, [userId, loadPreviews]);
 
   // Price channel: announce the watched account opening the app or returning after a while away.
   const isWatched = me?.user_id === WATCHED_USER_ID;
@@ -326,6 +332,7 @@ export function ChatApp({ userId }: { userId: string }) {
         }
       }
     };
+    let dropped = false;
     const ch = supabase
       .channel("messages-" + meId)
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
@@ -336,6 +343,12 @@ export function ChatApp({ userId }: { userId: string }) {
       .subscribe((status, error) => {
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
           console.error("Message realtime subscription failed:", status, error);
+          dropped = true;
+        } else if (status === "SUBSCRIBED" && dropped) {
+          // Back after a drop: messages sent meanwhile were never delivered here, so fetch them.
+          dropped = false;
+          void loadPreviews(allRef.current.filter((p) => p.id !== meId));
+          emitResync();
         }
       });
     const onLocal = (e: Event) => {
@@ -348,7 +361,7 @@ export function ChatApp({ userId }: { userId: string }) {
       supabase.removeChannel(ch);
       bus.removeEventListener("msg", onLocal);
     };
-  }, [me?.id, mutedRef]);
+  }, [me?.id, mutedRef, loadPreviews]);
 
   // Notification state survives logout: logging out removes the service worker, so register it again.
   useEffect(() => {

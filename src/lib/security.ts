@@ -75,6 +75,20 @@ export async function secureLogout(broadcastGlobally = false) {
   if (broadcastGlobally) await broadcastManualLogout();
   wipeLocalCaches();
   try { sessionStorage.clear(); } catch {}
+  // Mark offline while still signed in. After sign-out the database refuses the update, the account
+  // looked online for another minute, and Telegram alerts for messages sent in that minute were skipped.
+  try {
+    const { data } = await supabase.auth.getSession();
+    const uid = data.session?.user.id;
+    if (uid) {
+      await Promise.race([
+        supabase.from("profiles").update({ is_online: false }).eq("id", uid).then(() => undefined, () => undefined),
+        new Promise<void>((resolve) => window.setTimeout(resolve, 1500)),
+      ]);
+    }
+  } catch {
+    // signing out matters more than the status
+  }
   try { await supabase.auth.signOut(); } catch {}
   try { if ("Notification" in window) (navigator as any).serviceWorker?.getRegistrations?.().then((r: any[]) => r.forEach((x) => x.unregister())); } catch {}
 }

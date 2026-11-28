@@ -1,6 +1,8 @@
 import { createServerFn } from "@tanstack/react-start";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { TELEGRAM_FILE_MAX_BYTES, TELEGRAM_TARGET_BYTES, telegramRoutes } from "@/lib/telegram-media";
+import { telegramUpload, type UploadFile } from "@/lib/telegram-upload";
+import { NAUGHTY_PATH, serveNaughty } from "@/lib/r2";
 
 // Telegram alerts for the watched account. The bot token (T_BOT) stays on the server.
 // Message text is never forwarded — only what happened and who did it.
@@ -29,6 +31,11 @@ let lastPriceLiveAt = 0;
 // Server-side guard so a nudge can't be spammed even if the client cooldown is bypassed.
 const NUDGE_COOLDOWN_MS = 10_000;
 const lastNudgeByUser = new Map<string, number>();
+const NUDGE_MESSAGES = 10;
+// Telegram allows about one message a second to the same chat.
+const NUDGE_GAP_MS = 1050;
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MESSAGE_LABELS: Record<string, string> = {
   text: "💬 Message received from",
@@ -46,13 +53,35 @@ async function sendTelegram(text: string, chatId = process.env["T_CHAT_ID"] || D
     console.error("Telegram alert skipped: T_BOT is not configured.");
     return false;
   }
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
-  });
-  if (!response.ok) console.error("Telegram alert failed:", response.status, await response.text());
-  return response.ok;
+  // Telegram answers 429 with a wait time when messages come too fast, and requests can fail on
+  // the way. One short wait and a second try gets the alert through.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (response.ok) return true;
+      const body = await response.text();
+      console.error("Telegram alert failed:", response.status, body);
+      if (response.status !== 429 || attempt > 0) return false;
+      let retryAfter = 1;
+      try {
+        retryAfter = Number(JSON.parse(body).parameters?.retry_after) || 1;
+      } catch {
+        // keep one second
+      }
+      if (retryAfter > 5) return false;
+      await wait(retryAfter * 1000 + 250);
+    } catch (error) {
+      console.error("Telegram alert failed:", error);
+      if (attempt > 0) return false;
+      await wait(500);
+    }
+  }
+  return false;
 }
 
 const isRecent = (timestamp: string | null | undefined) =>
@@ -178,10 +207,15 @@ export const telegramAlert = createServerFn({ method: "POST" })
       const last = lastNudgeByUser.get(callerId) ?? 0;
       if (now - last < NUDGE_COOLDOWN_MS) return { sent: false, cooldown: true };
       lastNudgeByUser.set(callerId, now);
-      const results = await Promise.all(
-        Array.from({ length: 10 }, () => sendTelegram(`🚨 Nudge from ${name}`)),
-      );
-      return { sent: results.every(Boolean) };
+      // One after another. Ten at the same instant trips Telegram's flood limit, which then also
+      // refuses the ordinary alerts that follow.
+      let delivered = 0;
+      for (let i = 0; i < NUDGE_MESSAGES; i++) {
+        if (!(await sendTelegram(`🚨 Nudge from ${name}`))) break;
+        delivered++;
+        if (i < NUDGE_MESSAGES - 1) await wait(NUDGE_GAP_MS);
+      }
+      return { sent: delivered > 0 };
     }
 
     // Both message and reaction alerts: the event must involve the watched account and be fresh.
@@ -262,12 +296,12 @@ export function sendTelegramAlert(input: AlertInput) {
     .catch((error: unknown) => console.error("Telegram alert request failed:", error));
 }
 
-/** Sends a chat photo/video/file (or GIF link) to the Telegram channel. Caller must be able to read the message (RLS). */
+/** Sends a chat photo/video/file (or GIF/sticker) to the Telegram channel. Caller must be able to read the message (RLS). */
 export const shareToTelegram = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
+  // `url` is still accepted from older app copies but no longer used: the link is read from the message itself.
   .validator((input: { messageId: string; url?: string; compressedPath?: string }) => ({
     messageId: String(input.messageId),
-    url: input.url ? String(input.url) : undefined,
     compressedPath: input.compressedPath ? String(input.compressedPath) : undefined,
   }))
   .handler(async ({ data, context }) => {
@@ -291,12 +325,23 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       const kept = caller?.user_id === WATCHED_USER_ID && msg.receiver_id === context.userId && !!msg.view_once_opened_at;
       if (!kept) throw new Error("View-once media can't be shared.");
     }
+
+    type Failure = { status: number; reason: string } | null;
     // Returns null on success, otherwise Telegram's own explanation.
-    const send = async (m: string, init: Omit<RequestInit, "method">) => {
-      const res = await fetch(`https://api.telegram.org/bot${token}/${m}`, { method: "POST", ...init });
-      if (res.ok) return null;
+    const send = async (method: string, init: RequestInit): Promise<Failure> => {
+      let res: Response;
+      try {
+        res = await fetch(`https://api.telegram.org/bot${token}/${method}`, { ...init, method: "POST" });
+      } catch (cause) {
+        console.error(`Telegram ${method} failed:`, cause);
+        return { status: 0, reason: "could not reach Telegram" };
+      }
+      if (res.ok) {
+        await res.body?.cancel();
+        return null;
+      }
       const body = await res.text();
-      console.error(`Telegram ${m} failed:`, res.status, body);
+      console.error(`Telegram ${method} failed:`, res.status, body);
       try {
         return { status: res.status, reason: String(JSON.parse(body).description) };
       } catch {
@@ -304,15 +349,109 @@ export const shareToTelegram = createServerFn({ method: "POST" })
       }
     };
 
-    // GIFs and stickers from the picker have no stored file; Telegram fetches their public link itself.
+    // An upload needs the file's exact size. When the server does not state one (or the body is
+    // compressed on the way, so the stated size is wrong), read it, up to the limit, to find out.
+    const sized = async (res: Response, limit: number): Promise<UploadFile | null> => {
+      if (!res.ok || !res.body) {
+        await res.body?.cancel();
+        return null;
+      }
+      const type = res.headers.get("content-type") ?? "";
+      const declared = res.headers.get("content-encoding") ? 0 : Number(res.headers.get("content-length")) || 0;
+      if (declared > 0) return { body: res.body, size: declared, type };
+      const reader = res.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.length;
+        if (total > limit) {
+          await reader.cancel();
+          return { body: new Blob([]).stream(), size: total, type };
+        }
+        chunks.push(value);
+      }
+      const blob = new Blob(chunks as BlobPart[], { type });
+      return { body: blob.stream(), size: blob.size, type };
+    };
+
+    // `open` is called once per attempt, because a stream can only be read once.
+    const upload = async (open: () => Promise<UploadFile | null>, filename: string, limit: number, messageType: string): Promise<"sent" | "too-big"> => {
+      let file = await open();
+      if (!file) throw new Error("Could not read this file from storage.");
+      if (file.size > limit) {
+        await file.body.cancel();
+        return "too-big";
+      }
+      const { size, type } = file;
+      let failure: Failure = null;
+      // Each route falls through to the next, ending with a plain file.
+      for (const route of telegramRoutes(messageType, type, filename, size)) {
+        file ??= await open();
+        if (!file) throw new Error("Could not read this file from storage.");
+        const request = await telegramUpload({ chat_id: chatId }, route.field, filename, file);
+        file = null;
+        failure = await send(route.method, request);
+        if (!failure) return "sent";
+        // Only a 400 is about this file. Anything else (bad token, bot not in channel) won't change on retry.
+        if (failure.status !== 400) break;
+      }
+      throw new Error(`Telegram did not accept the file: ${failure?.reason ?? "unknown error"}`);
+    };
+
+    const lastSegment = (path: string, fallback: string) => {
+      try {
+        return decodeURIComponent(path.split("/").pop() || "") || fallback;
+      } catch {
+        return fallback;
+      }
+    };
+
+    // GIFs and stickers from the picker have no stored file, only a link kept in the message.
     if (!msg.media_url) {
-      if ((msg.type !== "gif" && msg.type !== "sticker") || !data.url?.startsWith("https://"))
-        throw new Error("This message has no file to send.");
+      if (msg.type !== "gif" && msg.type !== "sticker") throw new Error("This message has no file to send.");
+      let link = "";
+      try {
+        link = String((JSON.parse(msg.content ?? "") as { url?: unknown }).url ?? "");
+      } catch {
+        // not JSON: no link
+      }
+      // NAUGHTY stickers live in the private bucket, which Telegram cannot reach: upload the file itself.
+      if (link.startsWith(NAUGHTY_PATH)) {
+        const result = await upload(
+          async () => sized(await serveNaughty(new Request(new URL(link, "https://app.invalid"))), TELEGRAM_FILE_MAX_BYTES),
+          lastSegment(link, `sticker-${msg.id}`),
+          TELEGRAM_FILE_MAX_BYTES,
+          "image",
+        );
+        if (result === "too-big") throw new Error("This sticker is over Telegram's 50 MB limit.");
+        return { sent: true };
+      }
+      let host = "";
+      try {
+        const parsed = new URL(link);
+        if (parsed.protocol === "https:") host = parsed.hostname;
+      } catch {
+        // not a link
+      }
+      // Public web addresses only (a name with a dot, not a bare number or a local name).
+      if (!/^(?=.*[a-z])[a-z0-9.-]+\.[a-z]{2,}$/i.test(host)) throw new Error("This message has no file to send.");
+      // Telegram fetches a public link itself. That works for GIF and MP4.
       const failure = await send("sendAnimation", {
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, animation: data.url }),
+        body: JSON.stringify({ chat_id: chatId, animation: link }),
       });
-      if (failure) throw new Error(`Telegram did not accept the file: ${failure.reason}`);
+      if (!failure) return { sent: true };
+      if (failure.status !== 400) throw new Error(`Telegram did not accept the file: ${failure.reason}`);
+      // Anything else (WebP stickers, files Telegram could not fetch) is downloaded here and uploaded.
+      const result = await upload(
+        async () => sized(await fetch(link, { signal: AbortSignal.timeout(20_000) }), TELEGRAM_FILE_MAX_BYTES),
+        lastSegment(new URL(link).pathname, `media-${msg.id}`),
+        TELEGRAM_FILE_MAX_BYTES,
+        "image",
+      );
+      if (result === "too-big") throw new Error("This file is over Telegram's 50 MB limit.");
       return { sent: true };
     }
 
@@ -324,47 +463,13 @@ export const shareToTelegram = createServerFn({ method: "POST" })
     const mediaPath = data.compressedPath ?? msg.media_url;
     const { data: signed } = await context.supabase.storage.from("chat-media").createSignedUrl(mediaPath, 600);
     if (!signed?.signedUrl) throw new Error("Could not read this file from storage.");
-    const stored = await fetch(signed.signedUrl);
-    if (!stored.ok) throw new Error("Could not read this file from storage.");
+    const signedUrl = signed.signedUrl;
     // Too big for Telegram: the browser shrinks it and calls again with compressedPath.
     const limit = data.compressedPath ? TELEGRAM_FILE_MAX_BYTES : TELEGRAM_TARGET_BYTES;
-    const oversized = () => {
+    const result = await upload(async () => sized(await fetch(signedUrl), limit), lastSegment(mediaPath, `media-${msg.id}`), limit, msg.type);
+    if (result === "too-big") {
       if (data.compressedPath) throw new Error("The compressed file is still over Telegram's 50 MB limit.");
       return { sent: false, needsCompression: true };
-    };
-    const declaredSize = Number(stored.headers.get("content-length")) || 0;
-    if (declaredSize > limit) {
-      await stored.body?.cancel();
-      return oversized();
     }
-    // Count while reading, so a file with no declared size can't exhaust the Worker's memory.
-    if (!stored.body) throw new Error("Could not read this file from storage.");
-    const reader = stored.body.getReader();
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.length;
-      if (total > limit) {
-        await reader.cancel();
-        return oversized();
-      }
-      chunks.push(value);
-    }
-    const file = new Blob(chunks as BlobPart[], { type: stored.headers.get("content-type") ?? "" });
-
-    const filename = mediaPath.split("/").pop() || `media-${msg.id}`;
-    let failure: Awaited<ReturnType<typeof send>> = null;
-    // Each route falls through to the next, ending with a plain file.
-    for (const route of telegramRoutes(msg.type, file.type, filename, file.size)) {
-      const form = new FormData();
-      form.append("chat_id", chatId);
-      form.append(route.field, file, filename);
-      failure = await send(route.method, { body: form });
-      if (!failure) return { sent: true };
-      // Only a 400 is about this file. Anything else (bad token, bot not in channel) won't change on retry.
-      if (failure.status !== 400) break;
-    }
-    throw new Error(`Telegram did not accept the file: ${failure?.reason ?? "unknown error"}`);
+    return { sent: true };
   });

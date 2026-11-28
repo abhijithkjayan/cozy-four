@@ -20,6 +20,16 @@ export function messageTone() {
   try { beep(880, 0.12); beep(1320, 0.14, 0.12); } catch {}
 }
 
+/** Call from a tap: phones only let sound start after the user has touched the page. */
+export function primeAudio() {
+  try {
+    const c = ac();
+    if (c.state === "suspended") void c.resume();
+  } catch {
+    // no sound on this device
+  }
+}
+
 let ringTimer: number | null = null;
 export function startRing(outgoing = false) {
   stopRing();
