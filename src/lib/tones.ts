@@ -79,9 +79,10 @@ export async function registerNotificationWorker() {
 }
 
 /** Shows a system notification. `tag` groups notifications per chat; each new one still pops up. */
-export async function notify(title: string, body: string, tag?: string): Promise<boolean> {
+export async function notify(title: string, body: string, tag?: string, silent = false): Promise<boolean> {
   if (!notificationsEnabled()) return false;
-  const options: NotificationOptions & { renotify?: boolean } = { body, icon: "/icon-192.png", badge: "/icon-192.png" };
+  // silent: no sound, used during calls so the call audio is not interrupted.
+  const options: NotificationOptions & { renotify?: boolean } = { body, icon: "/icon-192.png", badge: "/icon-192.png", silent };
   if (tag) {
     options.tag = tag;
     options.renotify = true;

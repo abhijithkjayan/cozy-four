@@ -298,7 +298,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
         // Often a change of network (Wi-Fi to mobile data): try a new route after a short wait.
         window.setTimeout(() => {
           if (pc.current === p && p.iceConnectionState === "disconnected") restart();
-        }, 3000);
+          // Short mobile hiccups recover by themselves; searching for a new route too early adds a gap.
+        }, 6000);
         giveUpIfDown(20000);
       }
     };
@@ -307,6 +308,8 @@ export function CallProvider({ me, profiles, children }: { me: Profile; profiles
     local.current!.getTracks().forEach((t) => {
       // Tells the encoder this is a live camera, so it keeps the picture smooth rather than blocky.
       if (t.kind === "video" && "contentHint" in t) t.contentHint = "motion";
+      // Voice: the encoder favours keeping speech clear over music-like quality.
+      if (t.kind === "audio" && "contentHint" in t) t.contentHint = "speech";
       const sender = p.addTrack(t, local.current!);
       if (t.kind === "video") void raiseVideoBitrate(sender);
     });

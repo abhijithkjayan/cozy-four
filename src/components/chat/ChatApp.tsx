@@ -332,8 +332,11 @@ export function ChatApp({ userId }: { userId: string }) {
           setUnread((u) => ({ ...u, [peer]: (u[peer] ?? 0) + 1 }));
           const who = allRef.current.find((p) => p.id === peer)?.display_name ?? "New message";
           if (!mutedRef.current.has(peer)) {
-            if (!alertsMuted()) messageTone();
-            void notify(who, preview(m, meId), `chat-${peer}`);
+            // No sounds during a call: on phones a beep or notification sound can briefly take over
+            // the audio and cut the call out. The notification still shows, silently.
+            const inCall = idleState.paused;
+            if (!alertsMuted() && !inCall) messageTone();
+            void notify(who, preview(m, meId), `chat-${peer}`, inCall);
           }
         }
       }
